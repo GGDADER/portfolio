@@ -47,7 +47,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 <body>
 <div id="app"></div>
 <script>
-const FK="cvt2euhr01qladq0s6h0cvt2euhr01qladq0s6hg",TK="pt_t9",PK="pt_p9";
+const TK="pt_t9",PK="pt_p9";
 const ld=(k,f)=>{try{return JSON.parse(localStorage.getItem(k))||f}catch{return f}};
 const sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 const uid=()=>Math.random().toString(36).slice(2,8);
@@ -71,16 +71,28 @@ function calc(){
 const gp=s=>S.pr[s]?.p||null;
 const esc=s=>String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;");
 
-// Price fetch
+// Price fetch - multiple sources
+async function fetchOne(sym){
+  // Source 1: Yahoo Finance via query2
+  try{const r=await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`);
+  if(r.ok){const d=await r.json();const p=d?.chart?.result?.[0]?.meta?.regularMarketPrice;if(p>0)return p}}catch{}
+  // Source 2: Yahoo v6
+  try{const r=await fetch(`https://query1.finance.yahoo.com/v6/finance/quote?symbols=${sym}`);
+  if(r.ok){const d=await r.json();const p=d?.quoteResponse?.result?.[0]?.regularMarketPrice;if(p>0)return p}}catch{}
+  // Source 3: Finnhub (if user has own key)
+  const fk=localStorage.getItem("pt_fk");
+  if(fk){try{const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${fk}`);
+  if(r.ok){const d=await r.json();if(d.c>0)return d.c}}catch{}}
+  return null;
+}
 async function fetchPrices(silent){
   const pf=calc();if(!pf.op.length)return;
   if(!silent){S.pLoading=true;render()}
   const np={...S.pr};let ok=0;
   for(const pos of pf.op){
-    if(pos.tp==="crypto")continue;
-    try{const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${pos.s}&token=${FK}`);
-    if(r.ok){const d=await r.json();if(d.c>0){np[pos.s]={p:d.c,at:Date.now()};ok++}}}catch{}
-    await new Promise(r=>setTimeout(r,300));
+    const p=await fetchOne(pos.s);
+    if(p){np[pos.s]={p,at:Date.now()};ok++}
+    await new Promise(r=>setTimeout(r,400));
   }
   S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);
   if(!silent)toast(ok?`已更新 ${ok} 檔報價 ✓`:"更新失敗，請手動輸入");else render();
