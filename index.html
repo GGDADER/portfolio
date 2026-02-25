@@ -72,7 +72,8 @@ const gp=s=>S.pr[s]?.p||null;
 const esc=s=>String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;");
 
 // Price fetch - multiple sources
-try{const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=d6fg201r01qjq8n1gv0gd6fg201r01qjq8n1gv10`);
+async function fetchOne(sym){
+  try{const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=d6fg201r01qjq8n1gv0gd6fg201r01qjq8n1gv10`);
   if(r.ok){const d=await r.json();if(d.c>0)return d.c}}catch{}
   return null;
 }
