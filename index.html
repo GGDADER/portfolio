@@ -106,7 +106,7 @@ function calc(){
 
 function fetchOne(sym){
   if(isTW(sym)){
-    return fetch("https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_"+sym+".tw&json=1&delay=0").then(function(r){return r.json()}).then(function(d){var i=d&&d.msgArray&&d.msgArray[0];if(i){var p=parseFloat(i.z)||parseFloat(i.y);if(p>0)return p}return null}).catch(function(){return null})
+    return fetch(GS+"?action=twprice&sym="+sym).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?d.price:null}).catch(function(){return null})
   }
   return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?d.c:null}).catch(function(){return null})
 }
