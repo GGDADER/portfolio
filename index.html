@@ -64,175 +64,187 @@ function uid(){return Math.random().toString(36).slice(2,8)}
 function fm(n){return n!=null&&!isNaN(n)?Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"—"}
 function fmTW(n){return n!=null&&!isNaN(n)?Math.round(n).toLocaleString():"—"}
 function isTW(s){return/^\d{4,6}$/.test(s)}
-var S={tr:ld(TK,[]),pr:ld(PK,{}),v:“home”,ed:null,det:null,toast:null,tt:null,del:null,pv:””,pLoading:false,lastUp:null,cur:ld(CK,“USD”),modal:null,rate:ld(“pt_rate”,32.5),hide:ld(“pt_hide”,false),synced:false,syncing:false};
+
+var S={tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,del:null,pv:"",pLoading:false,lastUp:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),hide:ld("pt_hide",false),synced:false,syncing:false};
 function set(p){for(var k in p)S[k]=p[k];sv(TK,S.tr);render()}
 function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;render()},2000);render()}
-function toDisp(v,cur){return S.cur===“TWD”?(cur===“TWD”?v:v*S.rate):(cur===“TWD”?v/S.rate:v)}
-function ds(){return S.cur===“TWD”?“NT$”:”$”}
-function dfm(v){return S.cur===“TWD”?fmTW(v):fm(v)}
-function H(v){return S.hide?’<span class="blur">’+v+’</span>’:v}
+function toDisp(v,cur){return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
+function ds(){return S.cur==="TWD"?"NT$":"$"}
+function dfm(v){return S.cur==="TWD"?fmTW(v):fm(v)}
+function H(v){return S.hide?'<span class="blur">'+v+'</span>':v}
 function gp(s){return S.pr[s]?S.pr[s].p:null}
-function esc(s){return String(s||””).replace(/”/g,”"”).replace(/</g,”<”)}
+function esc(s){return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;")}
+
 function cloudSave(){
-S.syncing=true;
-fetch(GS,{method:“POST”,body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr)})}).then(function(){S.synced=true;S.syncing=false;render()}).catch(function(){S.syncing=false;render()});
+  S.syncing=true;
+  fetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr)})}).then(function(){S.synced=true;S.syncing=false;render()}).catch(function(){S.syncing=false;render()});
 }
 function cloudLoad(){
-S.syncing=true;render();
-fetch(GS+”?action=read”).then(function(r){return r.json()}).then(function(d){
-if(d.ok&&d.trades){try{
-var ct=JSON.parse(d.trades);var cp=d.prices?JSON.parse(d.prices):{};
-if(Array.isArray(ct)&&ct.length>0){var cids={};for(var i=0;i<ct.length;i++)cids[ct[i].id]=1;var lo=[];for(var i=0;i<S.tr.length;i++){if(!cids[S.tr[i].id])lo.push(S.tr[i]);}S.tr=ct.concat(lo);for(var k in cp)S.pr[k]=cp[k];sv(TK,S.tr);sv(PK,S.pr);}
-S.synced=true;}catch(e){}}
-S.syncing=false;render();
-}).catch(function(){S.syncing=false;render()});
+  S.syncing=true;render();
+  fetch(GS+"?action=read").then(function(r){return r.json()}).then(function(d){
+    if(d.ok&&d.trades){try{
+      var ct=JSON.parse(d.trades);var cp=d.prices?JSON.parse(d.prices):{};
+      if(Array.isArray(ct)&&ct.length>0){var cids={};for(var i=0;i<ct.length;i++)cids[ct[i].id]=1;var lo=[];for(var i=0;i<S.tr.length;i++){if(!cids[S.tr[i].id])lo.push(S.tr[i]);}S.tr=ct.concat(lo);for(var k in cp)S.pr[k]=cp[k];sv(TK,S.tr);sv(PK,S.pr);}
+      S.synced=true;}catch(e){}}
+    S.syncing=false;render();
+  }).catch(function(){S.syncing=false;render()});
 }
 function saveAll(){sv(TK,S.tr);sv(PK,S.pr);cloudSave()}
+
 function calc(){
-var p={},cl=[];
-var sorted=S.tr.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
-for(var i=0;i<sorted.length;i++){var t=sorted[i];
-var tw=t.cur===“TWD”,mul=tw?1000:1;
-if(!p[t.symbol])p[t.symbol]={s:t.symbol,tp:t.type,cur:t.cur||“USD”,q:0,c:0,bs:[]};var P=p[t.symbol];
-var cost=t.price*t.qty*mul;
-if(t.action===“buy”){P.q+=t.qty;P.c+=cost;P.bs.push({p:t.price*mul,r:t.qty})}
-else{var r=t.qty,cb=0;while(r>0&&P.bs.length){var b=P.bs[0],k=Math.min(r,b.r);cb+=k*b.p;r-=k;b.r-=k;if(b.r<=0)P.bs.shift()}P.q-=t.qty;P.c-=cb;cl.push({s:t.symbol,cur:t.cur||“USD”,pnl:t.price*t.qty*mul-cb,qty:t.qty,price:t.price,date:t.date,cb:cb})}}
-var op=[];for(var k in p){if(p[k].q>0)op.push({s:p[k].s,tp:p[k].tp,cur:p[k].cur,q:p[k].q,avg:p[k].c/p[k].q,c:p[k].c})}
-return{op:op,cl:cl};
+  var p={},cl=[];
+  var sorted=S.tr.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
+  for(var i=0;i<sorted.length;i++){var t=sorted[i];
+    var tw=t.cur==="TWD",mul=tw?1000:1;
+    if(!p[t.symbol])p[t.symbol]={s:t.symbol,tp:t.type,cur:t.cur||"USD",q:0,c:0,bs:[]};var P=p[t.symbol];
+    var cost=t.price*t.qty*mul;
+    if(t.action==="buy"){P.q+=t.qty;P.c+=cost;P.bs.push({p:t.price*mul,r:t.qty})}
+    else{var r=t.qty,cb=0;while(r>0&&P.bs.length){var b=P.bs[0],k=Math.min(r,b.r);cb+=k*b.p;r-=k;b.r-=k;if(b.r<=0)P.bs.shift()}P.q-=t.qty;P.c-=cb;cl.push({s:t.symbol,cur:t.cur||"USD",pnl:t.price*t.qty*mul-cb,qty:t.qty,price:t.price,date:t.date,cb:cb})}}
+  var op=[];for(var k in p){if(p[k].q>0)op.push({s:p[k].s,tp:p[k].tp,cur:p[k].cur,q:p[k].q,avg:p[k].c/p[k].q,c:p[k].c})}
+  return{op:op,cl:cl};
 }
+
 function fetchOne(sym){
-if(isTW(sym)){
-return fetch(“https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_”+sym+”.tw&json=1&delay=0”).then(function(r){return r.json()}).then(function(d){var i=d&&d.msgArray&&d.msgArray[0];if(i){var p=parseFloat(i.z)||parseFloat(i.y);if(p>0)return p}return null}).catch(function(){return null})
-}
-return fetch(“https://finnhub.io/api/v1/quote?symbol=”+sym+”&token=”+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?d.c:null}).catch(function(){return null})
+  if(isTW(sym)){
+    return fetch("https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_"+sym+".tw&json=1&delay=0").then(function(r){return r.json()}).then(function(d){var i=d&&d.msgArray&&d.msgArray[0];if(i){var p=parseFloat(i.z)||parseFloat(i.y);if(p>0)return p}return null}).catch(function(){return null})
+  }
+  return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?d.c:null}).catch(function(){return null})
 }
 function fetchRate(){
-return fetch(“https://open.er-api.com/v6/latest/USD”).then(function(r){return r.json()}).then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv(“pt_rate”,S.rate)}}).catch(function(){})
+  return fetch("https://open.er-api.com/v6/latest/USD").then(function(r){return r.json()}).then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}}).catch(function(){})
 }
 function fetchPrices(silent){
-var pf=calc();if(!pf.op.length)return;
-if(!silent){S.pLoading=true;render()}
-fetchRate().then(function(){
-var chain=Promise.resolve();var np={};for(var k in S.pr)np[k]=S.pr[k];var ok=0;
-for(var i=0;i<pf.op.length;i++){(function(pos){chain=chain.then(function(){return fetchOne(pos.s).then(function(p){if(p){np[pos.s]={p:p,at:Date.now()};ok++}}).then(function(){return new Promise(function(r){setTimeout(r,400)})})})})(pf.op[i])}
-chain.then(function(){S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);cloudSave();if(!silent)toast(ok?“已更新 “+ok+” 檔報價 ✓”:“更新失敗”);else render()})
-})
+  var pf=calc();if(!pf.op.length)return;
+  if(!silent){S.pLoading=true;render()}
+  fetchRate().then(function(){
+    var chain=Promise.resolve();var np={};for(var k in S.pr)np[k]=S.pr[k];var ok=0;
+    for(var i=0;i<pf.op.length;i++){(function(pos){chain=chain.then(function(){return fetchOne(pos.s).then(function(p){if(p){np[pos.s]={p:p,at:Date.now()};ok++}}).then(function(){return new Promise(function(r){setTimeout(r,400)})})})})(pf.op[i])}
+    chain.then(function(){S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);cloudSave();if(!silent)toast(ok?"已更新 "+ok+" 檔報價 ✓":"更新失敗");else render()})
+  })
 }
-var F={type:“stock”,symbol:””,action:“buy”,price:””,qty:””,date:new Date().toISOString().slice(0,10),cur:“USD”};
-function initF(t){if(t){F={type:t.type||“stock”,symbol:t.symbol||””,action:t.action||“buy”,price:t.price||””,qty:t.qty||””,date:t.date||new Date().toISOString().slice(0,10),cur:t.cur||“USD”,id:t.id}}else{F={type:“stock”,symbol:””,action:“buy”,price:””,qty:””,date:new Date().toISOString().slice(0,10),cur:“USD”}}}
-function readF(){var map={f_s:“symbol”,f_p:“price”,f_q:“qty”,f_d:“date”};var ids=[“f_s”,“f_p”,“f_q”,“f_d”];for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)F[map[ids[i]]]=ids[i]===“f_s”?el.value.toUpperCase():el.value}}
-function updTot(){readF();if(isTW(F.symbol))F.cur=“TWD”;var el=document.getElementById(“ftot”),ps=F.cur===“TWD”?“NT$”:”$”,tw=F.cur===“TWD”;var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);if(el)el.textContent=ps+(tw?fmTW(tot):fm(tot));var btn=document.getElementById(“sbtn”);if(btn)btn.disabled=!(F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0)}
+
+var F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),cur:"USD"};
+function initF(t){if(t){F={type:t.type||"stock",symbol:t.symbol||"",action:t.action||"buy",price:t.price||"",qty:t.qty||"",date:t.date||new Date().toISOString().slice(0,10),cur:t.cur||"USD",id:t.id}}else{F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),cur:"USD"}}}
+function readF(){var map={f_s:"symbol",f_p:"price",f_q:"qty",f_d:"date"};var ids=["f_s","f_p","f_q","f_d"];for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)F[map[ids[i]]]=ids[i]==="f_s"?el.value.toUpperCase():el.value}}
+function updTot(){readF();if(isTW(F.symbol))F.cur="TWD";var el=document.getElementById("ftot"),ps=F.cur==="TWD"?"NT$":"$",tw=F.cur==="TWD";var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);if(el)el.textContent=ps+(tw?fmTW(tot):fm(tot));var btn=document.getElementById("sbtn");if(btn)btn.disabled=!(F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0)}
 function setFType(v){readF();F.type=v;render()}
 function setFAct(v){readF();F.action=v;render()}
 function setFCur(v){readF();F.cur=v;render()}
-function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;var t={id:F.id||uid(),type:F.type,symbol:F.symbol.toUpperCase(),action:F.action,price:+F.price,qty:+F.qty,date:F.date,cur:F.cur};if(S.ed){var ntr=[];for(var i=0;i<S.tr.length;i++)ntr.push(S.tr[i].id===t.id?t:S.tr[i]);S.tr=ntr}else S.tr.push(t);S.ed=null;S.v=“trades”;saveAll();toast(“已儲存 ✓”);render();setTimeout(function(){fetchPrices(true)},500)}
-function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S.det]={p:v,at:Date.now()};S.pv=””;saveAll();toast(S.det+” 報價已更新 ✓”);render()}
-function toggleHide(){S.hide=!S.hide;sv(“pt_hide”,S.hide);render()}
-function deletePosition(sym){S.tr=S.tr.filter(function(t){return t.symbol!==sym});S.det=null;S.v=“home”;S.modal=null;saveAll();toast(sym+” 已刪除”);render()}
+function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;var t={id:F.id||uid(),type:F.type,symbol:F.symbol.toUpperCase(),action:F.action,price:+F.price,qty:+F.qty,date:F.date,cur:F.cur};if(S.ed){var ntr=[];for(var i=0;i<S.tr.length;i++)ntr.push(S.tr[i].id===t.id?t:S.tr[i]);S.tr=ntr}else S.tr.push(t);S.ed=null;S.v="trades";saveAll();toast("已儲存 ✓");render();setTimeout(function(){fetchPrices(true)},500)}
+function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S.det]={p:v,at:Date.now()};S.pv="";saveAll();toast(S.det+" 報價已更新 ✓");render()}
+function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
+function deletePosition(sym){S.tr=S.tr.filter(function(t){return t.symbol!==sym});S.det=null;S.v="home";S.modal=null;saveAll();toast(sym+" 已刪除");render()}
+
 function render(){try{
-var app=document.getElementById(“app”),pf=calc(),h=””;
-if(S.v===“det”&&S.det){
-var pos=null;for(var i=0;i<pf.op.length;i++){if(pf.op[i].s===S.det){pos=pf.op[i];break}}
-if(!pos){S.v=“home”;S.det=null;render();return}
-var p=gp(S.det),tw=pos.cur===“TWD”,ps=tw?“NT$”:”$”;
-var avgPS=tw?pos.avg/1000:pos.avg;
-var mV=p?p*pos.q*(tw?1000:1):null;
-var u=p?(p*(tw?1000:1)-pos.avg)*pos.q:null;
-var rt=p?((p*(tw?1000:1)-pos.avg)/pos.avg)*100:null;
-var pc=u!=null?(u>=0?”#00ddb8”:”#f44”):”#7b8da4”;
-var rP=0;for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].s===S.det)rP+=pf.cl[i].pnl}
-var st=S.tr.filter(function(t){return t.symbol===S.det}).sort(function(a,b){return new Date(a.date)-new Date(b.date)});
-var pAt=S.pr[S.det]?S.pr[S.det].at:null;var f=tw?fmTW:fm;var un=tw?“張”:“股”;
-h+=’<div class="hdr"><button onclick="set({v:\'home\',det:null})" style="background:0;border:0;color:#7b8da4;font-size:18px;cursor:pointer">‹ 返回</button><button class="hb" onclick="toggleHide()">’+(S.hide?“👁”:“🙈”)+’</button></div>’;
-h+=’<div class="scr"><div class="cnt">’;
-h+=’<div style="text-align:center;padding:0 0 24px"><div style="font-size:32px;font-weight:800">’+S.det+’</div>’;
-if(tw)h+=’<div style="font-size:11px;color:#fbbf24;margin-top:4px">🇹🇼 台股 · 1張=1000股</div>’;
-h+=’<div style="font-size:22px;color:#7b8da4;margin-top:6px">’+H(mV!=null?ps+f(mV):“尚未設定報價”)+’</div>’;
-if(rt!=null)h+=’<div style="font-size:15px;color:'+pc+';margin-top:4px">’+H((rt>=0?”+”:””)+fm(rt)+”%”)+’</div>’;
-h+=’</div>’;
-h+=’<div class="cd" style="padding:16px;margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:8px">更新報價 (’+ps+‘每股)</div><div style="display:flex;gap:8px"><input type=“number” step=“any” class=“inp” style=“flex:1” value=”’+esc(S.pv)+’” oninput=“S.pv=this.value” placeholder=”’+(p||“輸入”)+’”><button class="bp" style="flex:none;padding:10px 16px" onclick="savePr()">更新</button></div></div>’;
-h+=’<div class="cd" style="padding:0;overflow:hidden">’;
-h+=sr(“每股價格”,H(p?ps+f(p):“未設定”),”#e0e7f0”);
-h+=sr(“數量”,H(pos.q+” “+un+(tw?” (”+fmTW(pos.q*1000)+“股)”:””)),”#e0e7f0”);
-h+=sr(“報酬率”,H(rt!=null?(rt>=0?”+”:””)+fm(rt)+”%”:”—”),pc);
-h+=sr(“每股成本”,ps+f(avgPS),”#e0e7f0”);
-h+=sr(“總成本”,H(ps+f(pos.c)),”#e0e7f0”);
-h+=sr(“損益”,H(u!=null?(u>=0?”+”:”-”)+ps+f(Math.abs(u)):”—”),pc);
-h+=sr(“已實現損益”,H(rP?(rP>=0?”+”:”-”)+ps+f(Math.abs(rP)):ps+“0”),rP>=0?”#00ddb8”:”#f44”);
-if(pAt)h+=sr(“更新時間”,new Date(pAt).toLocaleString(“zh-TW”),”#e0e7f0”);
-h+=’</div>’;
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:16px 0 10px">交易紀錄（點擊編輯）</div>’;
-for(var i=0;i<st.length;i++){var t=st[i];h+=’<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})"><div style="display:flex;align-items:center;gap:8px"><span class=“badge ‘+(t.action===“buy”?“buy-bg”:“sell-bg”)+’”>’+(t.action===“buy”?“買入”:“賣出”)+’</span><span style="font-weight:700">@’+ps+f(t.price)+’</span><span style="font-size:12px;color:#7b8da4">x’+H(t.qty+un)+’</span></div><span style="font-size:13px;color:#7b8da4">’+t.date+’</span></div>’}
-h+=’<div style="margin-top:24px"><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除此持倉的所有交易</button></div>’;
-h+=’</div></div>’;
-if(S.modal&&S.modal.type===“delpos”)h+=’<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="cd" style="padding:24px;max-width:360px"><div style="font-weight:600;margin-bottom:8px">確認刪除 ‘+S.modal.sym+’？</div><div style="font-size:13px;color:#7b8da4;margin-bottom:16px">將刪除所有交易紀錄</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">確認刪除</button></div></div></div>’;
-fin(h);return}
-if(S.v===“form”){
-if(S.ed&&!F.id)initF(S.ed);var tw=F.cur===“TWD”,ps=tw?“NT$”:”$”;
-h+=’<div class="hdr"><span style="font-weight:700;font-size:17px">’+(S.ed?“編輯交易”:“新增交易”)+’</span></div><div class="scr"><div class="cnt"><div class="cd" style="padding:20px 18px">’;
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class=“tg ‘+(F.cur===“USD”?“on”:””)+’” onclick=“setFCur('USD')”>🇺🇸 美股</button><button class=“tg ‘+(F.cur===“TWD”?“tw”:””)+’” onclick=“setFCur('TWD')”>🇹🇼 台股</button></div>’;
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class=“tg ‘+(F.action===“buy”?“on”:””)+’” onclick=“setFAct('buy')”>買入</button><button class=“tg ‘+(F.action===“sell”?“sell”:””)+’” onclick=“setFAct('sell')”>賣出</button></div>’;
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">’+(tw?“股票代號”:“代號”)+’</div><input class=“inp” id=“f_s” value=”’+esc(F.symbol)+’” oninput=“updTot()” placeholder=”’+(tw?“2330”:“TSLA”)+’” style=“margin-bottom:14px”>’;
-h+=’<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">每股價格 (’+ps+’)</div><input class="inp" id="f_p" type="number" step="any" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">’+(tw?“張數”:“數量”)+’</div><input class="inp" id="f_q" type="number" step="any" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>’;
-if(tw)h+=’<div style="font-size:12px;color:#fbbf24;margin-bottom:8px">💡 1張=1000股，總成本 = 股價 x 張數 x 1000</div>’;
-var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);
-h+=’<div style="display:flex;justify-content:space-between;padding:14px 0;border-bottom:1px solid #1e2d45;margin-bottom:14px"><span style="color:#7b8da4">總金額</span><span id="ftot" style="color:#00ddb8;font-size:20px;font-weight:700">’+ps+(tw?fmTW(tot):fm(tot))+’</span></div>’;
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">日期</div><input class="inp" id="f_d" type="date" value="'+F.date+'" style="margin-bottom:14px">’;
-var ok=F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0;
-h+=’<div style="display:flex;gap:10px;margin-top:10px"><button class="bs" onclick="S.ed=null;initF();set({v:\'home\'})">取消</button><button class=“bp” id=“sbtn” onclick=“submitF()” ‘+(ok?””:“disabled”)+’>’+(S.ed?“更新”:“儲存”)+’</button></div>’;
-h+=’</div></div></div>’;h+=nav(“form”);fin(h);return}
-h+=’<div class="hdr"><div style="display:flex;align-items:center;gap:8px"><span style="color:#00ddb8;font-size:20px">◇</span><span style="font-weight:700;font-size:17px">Portfolio</span></div><div style="display:flex;align-items:center;gap:4px">’;
-h+=’<button class="hb" onclick="toggleHide()">’+(S.hide?“👁”:“🙈”)+’</button>’;
-h+=’<button class="ccb" onclick="S.cur=S.cur===\'USD\'?\'TWD\':\'USD\';sv(CK,S.cur);render()">’+(S.cur===“USD”?”$”:“NT$”)+’</button>’;
-h+=’<button class="rfb" onclick="fetchPrices(false)">’+(S.pLoading?“⏳”:“🔄”)+’</button>’;
-h+=’<button class="sb" onclick="cloudLoad()">’+(S.syncing?“⏳”:“☁️”)+’</button>’;
-h+=’</div></div>’;
-h+=’<div class="pst">’;
-if(S.lastUp)h+=’<span class="dot"></span>’+(S.pLoading?“更新中…”:“更新於 “+timeAgo(S.lastUp));
-h+=’<span class=“sdot” style=“background:’+(S.synced?”#00ddb8”:”#fbbf24”)+’”></span>’+(S.syncing?“同步中…”:S.synced?“已同步 ☁️”:“本機”);
-if(S.rate)h+=’ · 1 USD=’+fm(S.rate)+’ TWD’;
-h+=’</div><div class="scr"><div class="cnt">’;
-if(S.v===“home”){
-if(!S.tr.length){
-h+=’<div style="text-align:center;padding:60px 20px"><div style="font-size:48px;margin-bottom:16px">📊</div><div style="font-weight:600;font-size:20px;margin-bottom:8px">開始追蹤投資</div><div style="color:#7b8da4;font-size:14px;margin-bottom:24px">支援美股+台股 · 雲端自動同步</div></div>’;
-} else {
-var tMV=0,tU=0,tRP=0,tTC=0;
-for(var i=0;i<pf.op.length;i++){var x=pf.op[i];var p=gp(x.s);var tw=x.cur===“TWD”;var mv=p?p*x.q*(tw?1000:1):x.c;tMV+=toDisp(mv,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur)}
-for(var i=0;i<pf.cl.length;i++)tRP+=toDisp(pf.cl[i].pnl,pf.cl[i].cur);
-var D=ds();
-h+=’<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px">’;
-h+=sc(“持倉市值”,H(D+dfm(tMV)),”#5b9cf5”)+sc(“未實現盈虧”,H((tU>=0?”+”:”-”)+D+dfm(Math.abs(tU))),tU>=0?”#00ddb8”:”#f44”);
-h+=sc(“已實現盈虧”,H((tRP>=0?”+”:”-”)+D+dfm(Math.abs(tRP))),tRP>=0?”#00ddb8”:”#f44”)+sc(“持倉成本”,H(D+dfm(tTC)),”#a48bf5”);
-h+=’</div><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">持倉（點擊查看詳情）</div>’;
-for(var i=0;i<pf.op.length;i++){var x=pf.op[i];var p=gp(x.s);var tw=x.cur===“TWD”;var ps=tw?“NT$”:”$”;var f=tw?fmTW:fm;
-var avgPS=tw?x.avg/1000:x.avg;var mV=p?p*x.q*(tw?1000:1):null;var u=p?(p*(tw?1000:1)-x.avg)*x.q:null;var rt=p?((p*(tw?1000:1)-x.avg)/x.avg)*100:null;var pc=u!=null?(u>=0?”#00ddb8”:”#f44”):”#7b8da4”;
-var cpStr=p?’<span style="color:#5b9cf5;font-size:11px;margin-left:4px">📍’+ps+f(p)+’</span>’:””;
-h+=’<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">’;
-h+=’<div style="display:flex;align-items:center;gap:10px">’+(tw?’<div style="width:26px;height:26px;border-radius:7px;background:rgba(251,191,36,.12);display:flex;align-items:center;justify-content:center;font-size:11px">🇹🇼</div>’:””);
-h+=’<div><div style="font-weight:700;font-size:15px">’+x.s+’</div><div style="font-size:12px;color:#7b8da4;margin-top:2px">’+H(x.q+(tw?” 張”:” 股”))+’ · 均價 ‘+ps+f(avgPS)+cpStr+’</div></div></div>’;
-h+=’<div style="text-align:right"><div style="font-weight:700;color:'+pc+'">’+H(mV!=null?ps+f(mV):ps+f(x.c))+’</div><div style="font-size:12px;color:'+pc+'">’+H(rt!=null?(rt>=0?”+”:””)+fm(rt)+”%”:“輸入報價 ›”)+’</div></div></div>’}
-if(pf.cl.length){h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:20px 0 12px">已平倉</div>’;
-for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i];var g=c.pnl>=0;var cl=g?”#00ddb8”:”#f44”;var tw=c.cur===“TWD”;var ps=tw?“NT$”:”$”;var f=tw?fmTW:fm;
-h+=’<div class="cd" style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">’+c.s+(tw?’ <span class="badge tw-bg">台</span>’:””)+’</div><div style="font-size:12px;color:#7b8da4">賣出 ‘+H(c.qty+””)+” @ “+ps+f(c.price)+” · “+c.date+’</div></div><div style="text-align:right"><div style="font-weight:700;color:'+cl+'">’+H((g?”+”:”-”)+ps+f(Math.abs(c.pnl)))+’</div>’+(c.cb>0?’<div style="font-size:12px;color:'+cl+'">’+H((c.pnl/c.cb*100>=0?”+”:””)+fm(c.pnl/c.cb*100)+”%”)+’</div>’:””)+’</div></div>’}}
-}
-} else {
-h+=’<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">交易紀錄 (’+S.tr.length+’)</div>’;
-var sorted=S.tr.slice().sort(function(a,b){return new Date(b.date)-new Date(a.date)});
-for(var i=0;i<sorted.length;i++){var t=sorted[i];var buy=t.action===“buy”;var tw=t.cur===“TWD”;var ps=tw?“NT$”:”$”;var f=tw?fmTW:fm;
-h+=’<div class="cd" style="display:flex;align-items:center;gap:10px"><div style=“width:3px;height:32px;border-radius:2px;background:’+(buy?”#00ddb8”:”#f44”)+’”></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class=“badge ‘+(buy?“buy-bg”:“sell-bg”)+’”>’+(buy?“買入”:“賣出”)+’</span>’+(tw?’<span class="badge tw-bg">台</span>’:””)+’<span style="font-weight:700">’+t.symbol+’</span><span style="color:#7b8da4;font-size:13px">@’+ps+f(t.price)+’</span></div><div style="font-size:12px;color:#7b8da4">’+H(t.qty+(tw?” 張”:” 股”))+” · “+H(ps+f(t.qty*t.price*(tw?1000:1)))+” · “+t.date+’</div></div>’;
-h+=’<button onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">✏️</button>’;
-h+=’<button onclick="set({del:S.tr.find(function(x){return x.id===\''+t.id+'\'})})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">🗑</button></div>’}
-}
-h+=’</div></div>’;h+=nav(S.v);
-if(S.toast)h+=’<div class="toast">’+S.toast+’</div>’;
-if(S.del)h+=’<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="cd" style="padding:24px;max-width:360px"><div style="font-weight:600;margin-bottom:12px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="S.tr=S.tr.filter(function(x){return x.id!==S.del.id});S.del=null;saveAll();toast(\'已刪除\');render()">刪除</button></div></div></div>’;
-fin(h);
-}catch(e){document.getElementById(“app”).innerHTML=’<div style="padding:40px;color:#f44"><b>Error:</b> ‘+e.message+’</div>’}}
-function fin(h){document.getElementById(“app”).innerHTML=h}
-function nav(v){return’<div class="nav"><button class=“nb ‘+(v===“home”?“on”:””)+’” onclick=“S.ed=null;initF();set({v:'home'})”><span style="font-size:18px">💼</span>總覽</button><button class="fab" onclick="S.ed=null;initF();set({v:\'form\'})">+</button><button class=“nb ‘+(v===“trades”?“on”:””)+’” onclick=“S.ed=null;initF();set({v:'trades'})”><span style="font-size:18px">📋</span>交易</button></div>’}
-function sc(l,v,c){return’<div class="cd" style="border-left:3px solid '+c+'"><div style="font-size:12px;color:#7b8da4;margin-bottom:6px">’+l+’</div><div style="font-size:18px;font-weight:700;color:'+c+'">’+v+’</div></div>’}
-function sr(l,v,c){return’<div class="sr"><span style="font-size:14px;color:#7b8da4">’+l+’</span><span style="font-weight:600;font-size:15px;color:'+c+'">’+v+’</span></div>’}
-function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?“剛剛”:m<60?m+“分鐘前”:Math.floor(m/60)+“小時前”}
+  var app=document.getElementById("app"),pf=calc(),h="";
+
+  if(S.v==="det"&&S.det){
+    var pos=null;for(var i=0;i<pf.op.length;i++){if(pf.op[i].s===S.det){pos=pf.op[i];break}}
+    if(!pos){S.v="home";S.det=null;render();return}
+    var p=gp(S.det),tw=pos.cur==="TWD",ps=tw?"NT$":"$";
+    var avgPS=tw?pos.avg/1000:pos.avg;
+    var mV=p?p*pos.q*(tw?1000:1):null;
+    var u=p?(p*(tw?1000:1)-pos.avg)*pos.q:null;
+    var rt=p?((p*(tw?1000:1)-pos.avg)/pos.avg)*100:null;
+    var pc=u!=null?(u>=0?"#00ddb8":"#f44"):"#7b8da4";
+    var rP=0;for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].s===S.det)rP+=pf.cl[i].pnl}
+    var st=S.tr.filter(function(t){return t.symbol===S.det}).sort(function(a,b){return new Date(a.date)-new Date(b.date)});
+    var pAt=S.pr[S.det]?S.pr[S.det].at:null;var f=tw?fmTW:fm;var un=tw?"張":"股";
+    h+='<div class="hdr"><button onclick="set({v:\'home\',det:null})" style="background:0;border:0;color:#7b8da4;font-size:18px;cursor:pointer">‹ 返回</button><button class="hb" onclick="toggleHide()">'+(S.hide?"👁":"🙈")+'</button></div>';
+    h+='<div class="scr"><div class="cnt">';
+    h+='<div style="text-align:center;padding:0 0 24px"><div style="font-size:32px;font-weight:800">'+S.det+'</div>';
+    if(tw)h+='<div style="font-size:11px;color:#fbbf24;margin-top:4px">🇹🇼 台股 · 1張=1000股</div>';
+    h+='<div style="font-size:22px;color:#7b8da4;margin-top:6px">'+H(mV!=null?ps+f(mV):"尚未設定報價")+'</div>';
+    if(rt!=null)h+='<div style="font-size:15px;color:'+pc+';margin-top:4px">'+H((rt>=0?"+":"")+fm(rt)+"%")+'</div>';
+    h+='</div>';
+    h+='<div class="cd" style="padding:16px;margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:8px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 16px" onclick="savePr()">更新</button></div></div>';
+    h+='<div class="cd" style="padding:0;overflow:hidden">';
+    h+=sr("每股價格",H(p?ps+f(p):"未設定"),"#e0e7f0");
+    h+=sr("數量",H(pos.q+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#e0e7f0");
+    h+=sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
+    h+=sr("每股成本",ps+f(avgPS),"#e0e7f0");
+    h+=sr("總成本",H(ps+f(pos.c)),"#e0e7f0");
+    h+=sr("損益",H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):"—"),pc);
+    h+=sr("已實現損益",H(rP?(rP>=0?"+":"-")+ps+f(Math.abs(rP)):ps+"0"),rP>=0?"#00ddb8":"#f44");
+    if(pAt)h+=sr("更新時間",new Date(pAt).toLocaleString("zh-TW"),"#e0e7f0");
+    h+='</div>';
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:16px 0 10px">交易紀錄（點擊編輯）</div>';
+    for(var i=0;i<st.length;i++){var t=st[i];h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})"><div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span><span style="font-weight:700">@'+ps+f(t.price)+'</span><span style="font-size:12px;color:#7b8da4">x'+H(t.qty+un)+'</span></div><span style="font-size:13px;color:#7b8da4">'+t.date+'</span></div>'}
+    h+='<div style="margin-top:24px"><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除此持倉的所有交易</button></div>';
+    h+='</div></div>';
+    if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="cd" style="padding:24px;max-width:360px"><div style="font-weight:600;margin-bottom:8px">確認刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:#7b8da4;margin-bottom:16px">將刪除所有交易紀錄</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">確認刪除</button></div></div></div>';
+    fin(h);return}
+
+  if(S.v==="form"){
+    if(S.ed&&!F.id)initF(S.ed);var tw=F.cur==="TWD",ps=tw?"NT$":"$";
+    h+='<div class="hdr"><span style="font-weight:700;font-size:17px">'+(S.ed?"編輯交易":"新增交易")+'</span></div><div class="scr"><div class="cnt"><div class="cd" style="padding:20px 18px">';
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button></div>';
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.action==="buy"?"on":"")+'" onclick="setFAct(\'buy\')">買入</button><button class="tg '+(F.action==="sell"?"sell":"")+'" onclick="setFAct(\'sell\')">賣出</button></div>';
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" style="margin-bottom:14px">';
+    h+='<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
+    if(tw)h+='<div style="font-size:12px;color:#fbbf24;margin-bottom:8px">💡 1張=1000股，總成本 = 股價 x 張數 x 1000</div>';
+    var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);
+    h+='<div style="display:flex;justify-content:space-between;padding:14px 0;border-bottom:1px solid #1e2d45;margin-bottom:14px"><span style="color:#7b8da4">總金額</span><span id="ftot" style="color:#00ddb8;font-size:20px;font-weight:700">'+ps+(tw?fmTW(tot):fm(tot))+'</span></div>';
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">日期</div><input class="inp" id="f_d" type="date" value="'+F.date+'" style="margin-bottom:14px">';
+    var ok=F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0;
+    h+='<div style="display:flex;gap:10px;margin-top:10px"><button class="bs" onclick="S.ed=null;initF();set({v:\'home\'})">取消</button><button class="bp" id="sbtn" onclick="submitF()" '+(ok?"":"disabled")+'>'+(S.ed?"更新":"儲存")+'</button></div>';
+    h+='</div></div></div>';h+=nav("form");fin(h);return}
+
+  h+='<div class="hdr"><div style="display:flex;align-items:center;gap:8px"><span style="color:#00ddb8;font-size:20px">◇</span><span style="font-weight:700;font-size:17px">Portfolio</span></div><div style="display:flex;align-items:center;gap:4px">';
+  h+='<button class="hb" onclick="toggleHide()">'+(S.hide?"👁":"🙈")+'</button>';
+  h+='<button class="ccb" onclick="S.cur=S.cur===\'USD\'?\'TWD\':\'USD\';sv(CK,S.cur);render()">'+(S.cur==="USD"?"$":"NT$")+'</button>';
+  h+='<button class="rfb" onclick="fetchPrices(false)">'+(S.pLoading?"⏳":"🔄")+'</button>';
+  h+='<button class="sb" onclick="cloudLoad()">'+(S.syncing?"⏳":"☁️")+'</button>';
+  h+='</div></div>';
+  h+='<div class="pst">';
+  if(S.lastUp)h+='<span class="dot"></span>'+(S.pLoading?"更新中...":"更新於 "+timeAgo(S.lastUp));
+  h+='<span class="sdot" style="background:'+(S.synced?"#00ddb8":"#fbbf24")+'"></span>'+(S.syncing?"同步中...":S.synced?"已同步 ☁️":"本機");
+  if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
+  h+='</div><div class="scr"><div class="cnt">';
+
+  if(S.v==="home"){
+    if(!S.tr.length){
+      h+='<div style="text-align:center;padding:60px 20px"><div style="font-size:48px;margin-bottom:16px">📊</div><div style="font-weight:600;font-size:20px;margin-bottom:8px">開始追蹤投資</div><div style="color:#7b8da4;font-size:14px;margin-bottom:24px">支援美股+台股 · 雲端自動同步</div></div>';
+    } else {
+      var tMV=0,tU=0,tRP=0,tTC=0;
+      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];var p=gp(x.s);var tw=x.cur==="TWD";var mv=p?p*x.q*(tw?1000:1):x.c;tMV+=toDisp(mv,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur)}
+      for(var i=0;i<pf.cl.length;i++)tRP+=toDisp(pf.cl[i].pnl,pf.cl[i].cur);
+      var D=ds();
+      h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px">';
+      h+=sc("持倉市值",H(D+dfm(tMV)),"#5b9cf5")+sc("未實現盈虧",H((tU>=0?"+":"-")+D+dfm(Math.abs(tU))),tU>=0?"#00ddb8":"#f44");
+      h+=sc("已實現盈虧",H((tRP>=0?"+":"-")+D+dfm(Math.abs(tRP))),tRP>=0?"#00ddb8":"#f44")+sc("持倉成本",H(D+dfm(tTC)),"#a48bf5");
+      h+='</div><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">持倉（點擊查看詳情）</div>';
+      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];var p=gp(x.s);var tw=x.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
+        var avgPS=tw?x.avg/1000:x.avg;var mV=p?p*x.q*(tw?1000:1):null;var u=p?(p*(tw?1000:1)-x.avg)*x.q:null;var rt=p?((p*(tw?1000:1)-x.avg)/x.avg)*100:null;var pc=u!=null?(u>=0?"#00ddb8":"#f44"):"#7b8da4";
+        var cpStr=p?'<span style="color:#5b9cf5;font-size:11px;margin-left:4px">📍'+ps+f(p)+'</span>':"";
+        h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">';
+        h+='<div style="display:flex;align-items:center;gap:10px">'+(tw?'<div style="width:26px;height:26px;border-radius:7px;background:rgba(251,191,36,.12);display:flex;align-items:center;justify-content:center;font-size:11px">🇹🇼</div>':"");
+        h+='<div><div style="font-weight:700;font-size:15px">'+x.s+'</div><div style="font-size:12px;color:#7b8da4;margin-top:2px">'+H(x.q+(tw?" 張":" 股"))+' · 均價 '+ps+f(avgPS)+cpStr+'</div></div></div>';
+        h+='<div style="text-align:right"><div style="font-weight:700;color:'+pc+'">'+H(mV!=null?ps+f(mV):ps+f(x.c))+'</div><div style="font-size:12px;color:'+pc+'">'+H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"輸入報價 ›")+'</div></div></div>'}
+      if(pf.cl.length){h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:20px 0 12px">已平倉</div>';
+      for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i];var g=c.pnl>=0;var cl=g?"#00ddb8":"#f44";var tw=c.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
+        h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">'+c.s+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div style="font-size:12px;color:#7b8da4">賣出 '+H(c.qty+"")+" @ "+ps+f(c.price)+" · "+c.date+'</div></div><div style="text-align:right"><div style="font-weight:700;color:'+cl+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div style="font-size:12px;color:'+cl+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div>'}}
+    }
+  } else {
+    h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">交易紀錄 ('+S.tr.length+')</div>';
+    var sorted=S.tr.slice().sort(function(a,b){return new Date(b.date)-new Date(a.date)});
+    for(var i=0;i<sorted.length;i++){var t=sorted[i];var buy=t.action==="buy";var tw=t.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
+      h+='<div class="cd" style="display:flex;align-items:center;gap:10px"><div style="width:3px;height:32px;border-radius:2px;background:'+(buy?"#00ddb8":"#f44")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+'<span style="font-weight:700">'+t.symbol+'</span><span style="color:#7b8da4;font-size:13px">@'+ps+f(t.price)+'</span></div><div style="font-size:12px;color:#7b8da4">'+H(t.qty+(tw?" 張":" 股"))+" · "+H(ps+f(t.qty*t.price*(tw?1000:1)))+" · "+t.date+'</div></div>';
+      h+='<button onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">✏️</button>';
+      h+='<button onclick="set({del:S.tr.find(function(x){return x.id===\''+t.id+'\'})})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">🗑</button></div>'}
+  }
+  h+='</div></div>';h+=nav(S.v);
+  if(S.toast)h+='<div class="toast">'+S.toast+'</div>';
+  if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="cd" style="padding:24px;max-width:360px"><div style="font-weight:600;margin-bottom:12px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="S.tr=S.tr.filter(function(x){return x.id!==S.del.id});S.del=null;saveAll();toast(\'已刪除\');render()">刪除</button></div></div></div>';
+  fin(h);
+}catch(e){document.getElementById("app").innerHTML='<div style="padding:40px;color:#f44"><b>Error:</b> '+e.message+'</div>'}}
+
+function fin(h){document.getElementById("app").innerHTML=h}
+function nav(v){return'<div class="nav"><button class="nb '+(v==="home"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'home\'})"><span style="font-size:18px">💼</span>總覽</button><button class="fab" onclick="S.ed=null;initF();set({v:\'form\'})">+</button><button class="nb '+(v==="trades"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'trades\'})"><span style="font-size:18px">📋</span>交易</button></div>'}
+function sc(l,v,c){return'<div class="cd" style="border-left:3px solid '+c+'"><div style="font-size:12px;color:#7b8da4;margin-bottom:6px">'+l+'</div><div style="font-size:18px;font-weight:700;color:'+c+'">'+v+'</div></div>'}
+function sr(l,v,c){return'<div class="sr"><span style="font-size:14px;color:#7b8da4">'+l+'</span><span style="font-weight:600;font-size:15px;color:'+c+'">'+v+'</span></div>'}
+function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?"剛剛":m<60?m+"分鐘前":Math.floor(m/60)+"小時前"}
+
 render();
 cloudLoad();
 setTimeout(function(){fetchPrices(true)},2000);
