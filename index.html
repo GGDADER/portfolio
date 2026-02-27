@@ -89,8 +89,10 @@ function cloudLoad(){
         var valid=[];
         for(var i=0;i<ct.length;i++){
           var t=ct[i];
-          /* skip trades with missing critical fields */
-          if(!t||!t.symbol||!t.id){continue}
+          /* skip trades with missing/empty critical fields */
+          if(!t||!t.id){continue}
+          if(!t.symbol||String(t.symbol).replace(/\s/g,"")===""){continue}
+          if((!t.price&&t.price!==0)||(!t.qty&&t.qty!==0)){continue}
           /* ensure all fields have proper defaults */
           if(!t.action)t.action="buy";
           if(!t.price&&t.price!==0)t.price=0;
@@ -298,6 +300,18 @@ function nav(v){return'<div class="nav"><button class="nb '+(v==="home"?"on":"")
 function sc(l,v,c){return'<div class="cd" style="border-left:3px solid '+c+'"><div style="font-size:12px;color:#7b8da4;margin-bottom:6px">'+l+'</div><div style="font-size:18px;font-weight:700;color:'+c+'">'+v+'</div></div>'}
 function sr(l,v,c){return'<div class="sr"><span style="font-size:14px;color:#7b8da4">'+l+'</span><span style="font-weight:600;font-size:15px;color:'+c+'">'+v+'</span></div>'}
 function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?"剛剛":m<60?m+"分鐘前":Math.floor(m/60)+"小時前"}
+
+/* === Startup: purge invalid trades from localStorage === */
+(function(){
+  var clean=[];var dirty=false;
+  for(var i=0;i<S.tr.length;i++){
+    var t=S.tr[i];
+    if(t&&t.id&&t.symbol&&String(t.symbol).replace(/\s/g,"")!==""&&t.price!=null&&t.qty!=null&&t.qty>0){
+      clean.push(t);
+    } else { dirty=true; }
+  }
+  if(dirty){S.tr=clean;sv(TK,S.tr)}
+})();
 
 render();
 cloudLoad();
