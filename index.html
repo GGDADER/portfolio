@@ -84,7 +84,30 @@ function cloudLoad(){
   fetch(GS+"?action=read").then(function(r){return r.json()}).then(function(d){
     if(d.ok&&d.trades){try{
       var ct=JSON.parse(d.trades);var cp=d.prices?JSON.parse(d.prices):{};
-      if(Array.isArray(ct)&&ct.length>0){var cids={};for(var i=0;i<ct.length;i++)cids[ct[i].id]=1;var lo=[];for(var i=0;i<S.tr.length;i++){if(!cids[S.tr[i].id])lo.push(S.tr[i]);}S.tr=ct.concat(lo);for(var k in cp)S.pr[k]=cp[k];sv(TK,S.tr);sv(PK,S.pr);}
+      if(Array.isArray(ct)){
+        /* === FIX: validate & sanitize each trade from cloud === */
+        var valid=[];
+        for(var i=0;i<ct.length;i++){
+          var t=ct[i];
+          /* skip trades with missing critical fields */
+          if(!t||!t.symbol||!t.id){continue}
+          /* ensure all fields have proper defaults */
+          if(!t.action)t.action="buy";
+          if(!t.price&&t.price!==0)t.price=0;
+          if(!t.qty&&t.qty!==0)t.qty=0;
+          if(!t.date)t.date="2025-01-01";
+          if(!t.cur)t.cur=isTW(t.symbol)?"TWD":"USD";
+          if(!t.type)t.type="stock";
+          valid.push(t);
+        }
+        if(valid.length>0){
+          var cids={};for(var i=0;i<valid.length;i++)cids[valid[i].id]=1;
+          var lo=[];for(var i=0;i<S.tr.length;i++){if(!cids[S.tr[i].id])lo.push(S.tr[i]);}
+          S.tr=valid.concat(lo);
+          for(var k in cp)S.pr[k]=cp[k];
+          sv(TK,S.tr);sv(PK,S.pr);
+        }
+      }
       S.synced=true;}catch(e){}}
     S.syncing=false;render();
   }).catch(function(){S.syncing=false;render()});
@@ -95,11 +118,20 @@ function calc(){
   var p={},cl=[];
   var sorted=S.tr.slice().sort(function(a,b){return new Date(a.date)-new Date(b.date)});
   for(var i=0;i<sorted.length;i++){var t=sorted[i];
+    /* === FIX: skip trades with missing symbol === */
+    if(!t.symbol){continue}
     var tw=t.cur==="TWD",mul=tw?1000:1;
     if(!p[t.symbol])p[t.symbol]={s:t.symbol,tp:t.type,cur:t.cur||"USD",q:0,c:0,bs:[]};var P=p[t.symbol];
     var cost=t.price*t.qty*mul;
     if(t.action==="buy"){P.q+=t.qty;P.c+=cost;P.bs.push({p:t.price*mul,r:t.qty})}
-    else{var r=t.qty,cb=0;while(r>0&&P.bs.length){var b=P.bs[0],k=Math.min(r,b.r);cb+=k*b.p;r-=k;b.r-=k;if(b.r<=0)P.bs.shift()}P.q-=t.qty;P.c-=cb;cl.push({s:t.symbol,cur:t.cur||"USD",pnl:t.price*t.qty*mul-cb,qty:t.qty,price:t.price,date:t.date,cb:cb})}}
+    else{
+      var r=t.qty,cb=0;
+      while(r>0&&P.bs.length){var b=P.bs[0],k=Math.min(r,b.r);cb+=k*b.p;r-=k;b.r-=k;if(b.r<=0)P.bs.shift()}
+      P.q-=t.qty;P.c-=cb;
+      /* === FIX: always store symbol, price, qty, date, cur in closed trade === */
+      cl.push({s:t.symbol,cur:t.cur||"USD",pnl:t.price*t.qty*mul-cb,qty:t.qty,price:t.price,date:t.date||"",cb:cb})
+    }
+  }
   var op=[];for(var k in p){if(p[k].q>0)op.push({s:p[k].s,tp:p[k].tp,cur:p[k].cur,q:p[k].q,avg:p[k].c/p[k].q,c:p[k].c})}
   return{op:op,cl:cl};
 }
@@ -135,6 +167,9 @@ function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S
 function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
 function deletePosition(sym){S.tr=S.tr.filter(function(t){return t.symbol!==sym});S.det=null;S.v="home";S.modal=null;saveAll();toast(sym+" 已刪除");render()}
 
+/* === helper: find trade by id safely === */
+function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.tr[i]}return null}
+
 function render(){try{
   var app=document.getElementById("app"),pf=calc(),h="";
 
@@ -161,15 +196,21 @@ function render(){try{
     h+='<div class="cd" style="padding:0;overflow:hidden">';
     h+=sr("每股價格",H(p?ps+f(p):"未設定"),"#e0e7f0");
     h+=sr("數量",H(pos.q+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#e0e7f0");
-    h+=sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
+    /* === CHANGE: 當前市值 moved here, above 總成本 === */
+    h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"#5b9cf5");
     h+=sr("每股成本",ps+f(avgPS),"#e0e7f0");
     h+=sr("總成本",H(ps+f(pos.c)),"#e0e7f0");
     h+=sr("損益",H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):"—"),pc);
+    h+=sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
     h+=sr("已實現損益",H(rP?(rP>=0?"+":"-")+ps+f(Math.abs(rP)):ps+"0"),rP>=0?"#00ddb8":"#f44");
     if(pAt)h+=sr("更新時間",new Date(pAt).toLocaleString("zh-TW"),"#e0e7f0");
     h+='</div>';
     h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:16px 0 10px">交易紀錄（點擊編輯）</div>';
-    for(var i=0;i<st.length;i++){var t=st[i];h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})"><div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span><span style="font-weight:700">@'+ps+f(t.price)+'</span><span style="font-size:12px;color:#7b8da4">x'+H(t.qty+un)+'</span></div><span style="font-size:13px;color:#7b8da4">'+t.date+'</span></div>'}
+    for(var i=0;i<st.length;i++){var t=st[i];
+      /* === FIX: use findTr instead of inline S.tr.find for ES5 compat and safety === */
+      h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}">';
+      h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span><span style="font-weight:700">@'+ps+f(t.price)+'</span><span style="font-size:12px;color:#7b8da4">x'+H(t.qty+un)+'</span></div><span style="font-size:13px;color:#7b8da4">'+t.date+'</span></div>';
+    }
     h+='<div style="margin-top:24px"><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除此持倉的所有交易</button></div>';
     h+='</div></div>';
     if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="cd" style="padding:24px;max-width:360px"><div style="font-weight:600;margin-bottom:8px">確認刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:#7b8da4;margin-bottom:16px">將刪除所有交易紀錄</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">確認刪除</button></div></div></div>';
@@ -220,18 +261,31 @@ function render(){try{
         h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">';
         h+='<div style="display:flex;align-items:center;gap:10px">'+(tw?'<div style="width:26px;height:26px;border-radius:7px;background:rgba(251,191,36,.12);display:flex;align-items:center;justify-content:center;font-size:11px">🇹🇼</div>':"");
         h+='<div><div style="font-weight:700;font-size:15px">'+x.s+'</div><div style="font-size:12px;color:#7b8da4;margin-top:2px">'+H(x.q+(tw?" 張":" 股"))+' · 均價 '+ps+f(avgPS)+cpStr+'</div></div></div>';
-        h+='<div style="text-align:right"><div style="font-weight:700;color:'+pc+'">'+H(mV!=null?ps+f(mV):ps+f(x.c))+'</div><div style="font-size:12px;color:'+pc+'">'+H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"輸入報價 ›")+'</div></div></div>'}
+        /* === CHANGE: card right side now shows P&L amount instead of market value === */
+        h+='<div style="text-align:right"><div style="font-weight:700;color:'+pc+'">'+H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):ps+f(x.c))+'</div><div style="font-size:12px;color:'+pc+'">'+H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"輸入報價 ›")+'</div></div></div>'}
       if(pf.cl.length){h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin:20px 0 12px">已平倉</div>';
-      for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i];var g=c.pnl>=0;var cl=g?"#00ddb8":"#f44";var tw=c.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
-        h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">'+c.s+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div style="font-size:12px;color:#7b8da4">賣出 '+H(c.qty+"")+" @ "+ps+f(c.price)+" · "+c.date+'</div></div><div style="text-align:right"><div style="font-weight:700;color:'+cl+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div style="font-size:12px;color:'+cl+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div>'}}
+      for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i];
+        /* === FIX: guard against undefined values in closed trades === */
+        var cSym=c.s||"???";
+        var cQty=c.qty||0;
+        var cPrice=c.price||0;
+        var cDate=c.date||"";
+        var g=c.pnl>=0;var cl2=g?"#00ddb8":"#f44";var tw=c.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
+        h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div style="font-size:12px;color:#7b8da4">賣出 '+H(cQty+"")+" @ "+ps+f(cPrice)+" · "+cDate+'</div></div><div style="text-align:right"><div style="font-weight:700;color:'+cl2+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div style="font-size:12px;color:'+cl2+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div>'}}
     }
   } else {
     h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">交易紀錄 ('+S.tr.length+')</div>';
     var sorted=S.tr.slice().sort(function(a,b){return new Date(b.date)-new Date(a.date)});
-    for(var i=0;i<sorted.length;i++){var t=sorted[i];var buy=t.action==="buy";var tw=t.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
-      h+='<div class="cd" style="display:flex;align-items:center;gap:10px"><div style="width:3px;height:32px;border-radius:2px;background:'+(buy?"#00ddb8":"#f44")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+'<span style="font-weight:700">'+t.symbol+'</span><span style="color:#7b8da4;font-size:13px">@'+ps+f(t.price)+'</span></div><div style="font-size:12px;color:#7b8da4">'+H(t.qty+(tw?" 張":" 股"))+" · "+H(ps+f(t.qty*t.price*(tw?1000:1)))+" · "+t.date+'</div></div>';
-      h+='<button onclick="S.ed=JSON.parse(JSON.stringify(S.tr.find(function(x){return x.id===\''+t.id+'\'})));initF(S.ed);set({v:\'form\'})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">✏️</button>';
-      h+='<button onclick="set({del:S.tr.find(function(x){return x.id===\''+t.id+'\'})})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">🗑</button></div>'}
+    for(var i=0;i<sorted.length;i++){var t=sorted[i];
+      /* === FIX: guard against undefined symbol === */
+      var tSym=t.symbol||"???";
+      var tPrice=t.price||0;
+      var tQty=t.qty||0;
+      var buy=t.action==="buy";var tw=t.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
+      h+='<div class="cd" style="display:flex;align-items:center;gap:10px"><div style="width:3px;height:32px;border-radius:2px;background:'+(buy?"#00ddb8":"#f44")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+'<span style="font-weight:700">'+tSym+'</span><span style="color:#7b8da4;font-size:13px">@'+ps+f(tPrice)+'</span></div><div style="font-size:12px;color:#7b8da4">'+H(tQty+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+" · "+t.date+'</div></div>';
+      /* === FIX: use findTr helper instead of inline S.tr.find === */
+      h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">✏️</button>';
+      h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:#7b8da4;cursor:pointer;font-size:14px">🗑</button></div>'}
   }
   h+='</div></div>';h+=nav(S.v);
   if(S.toast)h+='<div class="toast">'+S.toast+'</div>';
