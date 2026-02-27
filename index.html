@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Portfolio">
 <meta name="theme-color" content="#0b1120">
-<title>越來越有錢 Tracker</title>
+<title>Portfolio Tracker</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◇</text></svg>">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -117,8 +117,8 @@ function calc(){
 }
 
 function fetchOne(sym){
-  if(isTW(sym))return fetch(GS+"?action=twprice&sym="+sym).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?d.price:null}).catch(function(){return null});
-  return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?d.c:null}).catch(function(){return null})
+  if(isTW(sym))return fetch(GS+"?action=twprice&sym="+sym).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null}:null}).catch(function(){return null});
+  return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null}:null}).catch(function(){return null})
 }
 function fetchRate(){return fetch("https://open.er-api.com/v6/latest/USD").then(function(r){return r.json()}).then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}}).catch(function(){})}
 function fetchPrices(silent){
@@ -126,7 +126,7 @@ function fetchPrices(silent){
   if(!silent){S.pLoading=true;render()}
   fetchRate().then(function(){
     var chain=Promise.resolve();var np={};for(var k in S.pr)np[k]=S.pr[k];var ok=0;
-    for(var i=0;i<pf.op.length;i++){(function(pos){chain=chain.then(function(){return fetchOne(pos.s).then(function(p){if(p){np[pos.s]={p:p,at:Date.now()};ok++}}).then(function(){return new Promise(function(r){setTimeout(r,400)})})})})(pf.op[i])}
+    for(var i=0;i<pf.op.length;i++){(function(pos){chain=chain.then(function(){return fetchOne(pos.s).then(function(r){if(r&&r.p){np[pos.s]={p:r.p,pc:r.pc,at:Date.now()};ok++}}).then(function(){return new Promise(function(re){setTimeout(re,400)})})})})(pf.op[i])}
     chain.then(function(){S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);snapHistory();if(!silent)toast(ok?"已更新 "+ok+" 檔報價 ✓":"更新失敗");else render()})
   })
 }
@@ -209,7 +209,10 @@ function render(){try{
     h+='</div>';
     h+='<div class="cd" style="padding:16px;margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:8px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 16px" onclick="savePr()">更新</button></div></div>';
     h+='<div class="cd" style="padding:0;overflow:hidden">';
+    var prData=S.pr[S.det];var pcv=prData&&prData.pc?prData.pc:null;
+    var dayChg=p&&pcv?(p-pcv):null;var dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null;var dcCol=dayChg!=null?(dayChg>=0?"#00ddb8":"#f44"):"#7b8da4";
     h+=sr("每股價格",H(p?ps+f(p):"未設定"),"#e0e7f0")+sr("數量",H(pos.q+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#e0e7f0");
+    if(dayChg!=null)h+=sr("今日漲跌",H((dayChg>=0?"+":"")+ps+f(dayChg)+" ("+(dayPct>=0?"+":"")+fm(dayPct)+"%)"),dcCol);
     h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"#5b9cf5")+sr("每股成本",ps+f(avgPS),"#e0e7f0")+sr("總成本",H(ps+f(pos.c)),"#e0e7f0");
     h+=sr("損益",H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):"—"),pc)+sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
     h+=sr("已實現損益",H(rP?(rP>=0?"+":"-")+ps+f(Math.abs(rP)):ps+"0"),rP>=0?"#00ddb8":"#f44");
@@ -274,7 +277,15 @@ function render(){try{
       h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">持倉（點擊查看詳情）</div>';
       for(var i=0;i<pf.op.length;i++){var x=pf.op[i];var p=gp(x.s);var tw=x.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
         var avgPS=tw?x.avg/1000:x.avg,mV=p?p*x.q*(tw?1000:1):null,u=p?(p*(tw?1000:1)-x.avg)*x.q:null,rt=p?((p*(tw?1000:1)-x.avg)/x.avg)*100:null,pc=u!=null?(u>=0?"#00ddb8":"#f44"):"#7b8da4";
-        var cpStr=p?'<span style="color:#5b9cf5;font-size:11px;margin-left:4px">📍'+ps+f(p)+'</span>':"";
+        var cpStr="";
+        if(p){
+          var prData=S.pr[x.s];var pcv=prData&&prData.pc?prData.pc:null;
+          var dayChg=pcv?(p-pcv):null;var dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null;
+          var dcCol=dayChg!=null?(dayChg>=0?"#00ddb8":"#f44"):"#5b9cf5";
+          cpStr='<span style="color:'+dcCol+';font-size:11px;margin-left:4px">📍'+ps+f(p);
+          if(dayChg!=null)cpStr+=' <span style="font-size:10px">'+(dayChg>=0?"+":"")+fm(dayChg)+'('+(dayPct>=0?"+":"")+fm(dayPct)+'%)</span>';
+          cpStr+='</span>';
+        }
         h+='<div class="cd" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">';
         h+='<div style="display:flex;align-items:center;gap:10px">'+(tw?'<div style="width:26px;height:26px;border-radius:7px;background:rgba(251,191,36,.12);display:flex;align-items:center;justify-content:center;font-size:11px">🇹🇼</div>':"");
         h+='<div><div style="font-weight:700;font-size:15px">'+x.s+'</div><div style="font-size:12px;color:#7b8da4;margin-top:2px">'+H(x.q+(tw?" 張":" 股"))+' · 均價 '+ps+f(avgPS)+cpStr+'</div></div></div>';
