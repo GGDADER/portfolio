@@ -57,8 +57,8 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 <body>
 <div id="app"></div>
 <script>
-var FK="d6fg201r01qjq8n1gv0gd6fg201r01qjq8n1gv10";
-var GS="https://script.google.com/macros/s/AKfycbwColvvqWmWK4IFQ8Shu8iT5nyqQdYOyrcLr2tf6Cd384cqPFqoKe7srLu2xHsFPPB7/exec";
+var FK=ld("pt_fk","");
+var GS=ld("pt_gs","");
 var TK="pt_t9",PK="pt_p9",CK="pt_cur",HK="pt_hist9";
 function ld(k,f){try{return JSON.parse(localStorage.getItem(k))||f}catch(e){return f}}
 function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
@@ -72,6 +72,79 @@ var S={tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,de
 /* Startup: purge invalid trades */
 (function(){var c=[],d=false;for(var i=0;i<S.tr.length;i++){var t=S.tr[i];if(t&&t.id&&t.symbol&&String(t.symbol).replace(/\s/g,"")!==""&&t.price!=null&&t.qty!=null&&t.qty>0){c.push(t)}else{d=true}}if(d){S.tr=c;sv(TK,S.tr)}})();
 
+function cfgOk(){return FK&&GS&&FK.length>5&&GS.length>10}
+function saveCfg(){
+  var fk=document.getElementById("cfg_fk");var gs=document.getElementById("cfg_gs");
+  if(fk)FK=fk.value.trim();if(gs)GS=gs.value.trim();
+  sv("pt_fk",FK);sv("pt_gs",GS);
+  if(cfgOk()){toast("設定已儲存 ✓");render()}else{toast("請填入完整設定")}
+}
+function clearCfg(){if(confirm("確定要清除所有設定和資料？\n這會刪除本機所有交易、報價、歷史紀錄。")){localStorage.clear();FK="";GS="";S.tr=[];S.pr={};render()}}
+
+function renderSetup(){
+  var h='<div class="hdr"><div style="display:flex;align-items:center;gap:8px"><span style="color:#00ddb8;font-size:20px">◇</span><span style="font-weight:700;font-size:17px">Portfolio</span></div>';
+  if(cfgOk())h+='<button class="rfb" onclick="S.v=\'home\';render()">← 返回</button>';
+  h+='</div><div class="scr"><div class="cnt">';
+
+  if(!cfgOk()){
+    h+='<div style="text-align:center;padding:30px 0 20px"><div style="font-size:48px;margin-bottom:12px">🔐</div><div style="font-weight:700;font-size:20px;margin-bottom:6px">首次設定</div><div style="color:#7b8da4;font-size:13px">只需設定一次，資料儲存在你的瀏覽器中</div></div>';
+  }
+
+  h+='<div class="cd" style="padding:18px"><div style="font-size:15px;font-weight:700;margin-bottom:14px">⚙️ API 設定</div>';
+  h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">Finnhub API Key</div>';
+  h+='<input class="inp" id="cfg_fk" value="'+esc(FK)+'" placeholder="你的 Finnhub API Key" style="margin-bottom:12px">';
+  h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:6px">Google Apps Script URL</div>';
+  h+='<input class="inp" id="cfg_gs" value="'+esc(GS)+'" placeholder="你的 GAS 部署 URL" style="margin-bottom:14px">';
+  h+='<button class="bp" style="width:100%" onclick="saveCfg()">💾 儲存設定</button>';
+  h+='</div>';
+
+  /* Setup Guide */
+  h+='<div class="cd" style="padding:18px;margin-top:8px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">📖 設定教學</div>';
+
+  h+='<div style="margin-bottom:16px"><div style="font-weight:700;color:#00ddb8;margin-bottom:6px">步驟 1：取得 Finnhub API Key（免費）</div>';
+  h+='<div style="font-size:13px;color:#7b8da4;line-height:1.6">';
+  h+='1. 前往 <span style="color:#60a5fa">finnhub.io</span> 註冊帳號<br>';
+  h+='2. 登入後在 Dashboard 頁面即可看到 API Key<br>';
+  h+='3. 複製 API Key 貼到上方欄位<br>';
+  h+='<span style="color:#fbbf24">💡 免費方案每分鐘 60 次呼叫，個人使用綽綽有餘</span></div></div>';
+
+  h+='<div style="margin-bottom:16px"><div style="font-weight:700;color:#00ddb8;margin-bottom:6px">步驟 2：部署 Google Apps Script（免費）</div>';
+  h+='<div style="font-size:13px;color:#7b8da4;line-height:1.6">';
+  h+='1. 前往 <span style="color:#60a5fa">sheets.new</span> 建立新的 Google Sheet<br>';
+  h+='2. 選單 → 擴充功能 → Apps Script<br>';
+  h+='3. 清空預設程式碼，貼上以下程式碼<br>';
+  h+='4. 點擊「部署」→「新增部署」<br>';
+  h+='5. 類型選「網頁應用程式」<br>';
+  h+='6. 執行身分選「我」，存取權選「任何人」<br>';
+  h+='7. 部署後複製 URL 貼到上方欄位</div></div>';
+
+  h+='<div style="font-weight:700;color:#fbbf24;margin-bottom:8px">📋 Apps Script 程式碼（點擊複製）</div>';
+  h+='<div onclick="copyGAS()" style="background:#0b1120;border:1px solid #1e2d45;border-radius:8px;padding:12px;font-size:11px;color:#7b8da4;cursor:pointer;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-family:monospace;line-height:1.5" id="gasCode">';
+  h+=esc(gasCode());
+  h+='</div>';
+  h+='<div style="font-size:11px;color:#7b8da4;margin-top:6px;text-align:center">👆 點擊上方程式碼區塊即可複製</div>';
+  h+='</div>';
+
+  if(cfgOk()){
+    h+='<div class="cd" style="padding:18px;margin-top:8px"><div style="font-size:15px;font-weight:700;margin-bottom:12px;color:#f44">⚠️ 危險區域</div>';
+    h+='<button class="bd" onclick="clearCfg()">🗑 清除所有設定和資料</button>';
+    h+='</div>';
+  }
+
+  h+='</div></div>';
+  return h;
+}
+
+function gasCode(){
+  return "var SHEET_NAME = 'Data';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n    sh.clear();\n    sh.getRange('A1').setValue(d.trades || '[]');\n    sh.getRange('B1').setValue(d.prices || '{}');\n    return jsonOut({ok:true});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction readData() {\n  try {\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:false,msg:'no sheet'});\n    var trades = sh.getRange('A1').getValue();\n    var prices = sh.getRange('B1').getValue();\n    return jsonOut({ok:true,trades:trades,prices:prices});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}";
+}
+
+function copyGAS(){
+  var code=gasCode();
+  if(navigator.clipboard){navigator.clipboard.writeText(code).then(function(){toast("已複製程式碼 ✓")}).catch(function(){fallbackCopy(code)})}else{fallbackCopy(code)}
+}
+function fallbackCopy(t){var a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.left="-9999px";document.body.appendChild(a);a.select();try{document.execCommand("copy");toast("已複製程式碼 ✓")}catch(e){toast("複製失敗，請手動選取")}document.body.removeChild(a)}
+
 function set(p){for(var k in p)S[k]=p[k];sv(TK,S.tr);render()}
 function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;render()},2000);render()}
 function toDisp(v,cur){return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
@@ -83,11 +156,13 @@ function esc(s){return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;")
 
 /* Cloud: manual upload */
 function cloudSave(){
+  if(!GS){toast("請先設定 Google Apps Script URL");return}
   S.syncing=true;render();
   fetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr)})}).then(function(){S.synced=true;S.syncing=false;toast("已上傳至雲端 ✓")}).catch(function(){S.syncing=false;toast("上傳失敗");render()});
 }
 /* Cloud: manual download — FULL REPLACE, no merge */
 function cloudLoad(){
+  if(!GS){toast("請先設定 Google Apps Script URL");return}
   S.syncing=true;render();
   fetch(GS+"?action=read").then(function(r){return r.json()}).then(function(d){
     if(d.ok&&d.trades){try{
@@ -117,7 +192,8 @@ function calc(){
 }
 
 function fetchOne(sym){
-  if(isTW(sym))return fetch(GS+"?action=twprice&sym="+sym).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null}:null}).catch(function(){return null});
+  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetch(GS+"?action=twprice&sym="+sym).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null}:null}).catch(function(){return null})}
+  if(!FK)return Promise.resolve(null);
   return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null}:null}).catch(function(){return null})
 }
 function fetchRate(){return fetch("https://open.er-api.com/v6/latest/USD").then(function(r){return r.json()}).then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}}).catch(function(){})}
@@ -193,6 +269,9 @@ function renderChart(data,w,ht){
 function render(){try{
   var app=document.getElementById("app"),pf=calc(),h="";
 
+  /* Show setup page if no config or user requested it */
+  if(!cfgOk()||S.v==="setup"){fin(renderSetup());return}
+
   if(S.v==="det"&&S.det){
     var pos=null;for(var i=0;i<pf.op.length;i++){if(pf.op[i].s===S.det){pos=pf.op[i];break}}
     if(!pos){S.v="home";S.det=null;render();return}
@@ -243,8 +322,9 @@ function render(){try{
   h+='<button class="hb" onclick="toggleHide()">'+(S.hide?"👁":"🙈")+'</button>';
   h+='<button class="ccb" onclick="S.cur=S.cur===\'USD\'?\'TWD\':\'USD\';sv(CK,S.cur);render()">'+(S.cur==="USD"?"$":"NT$")+'</button>';
   h+='<button class="rfb" onclick="fetchPrices(false)">'+(S.pLoading?"⏳":"🔄")+'</button>';
-  h+='<button class="sb" onclick="cloudSave()" title="上傳至雲端">'+(S.syncing?"⏳":"↑☁")+'</button>';
-  h+='<button class="sb" onclick="if(confirm(\'從雲端下載將覆蓋本機資料，確定？\'))cloudLoad()" title="從雲端下載">☁↓</button>';
+  h+='<button class="sb" onclick="if(!GS){toast(\'請先設定 Google Apps Script URL\');return}cloudSave()" title="上傳至雲端">'+(S.syncing?"⏳":"↑☁")+'</button>';
+  h+='<button class="sb" onclick="if(!GS){toast(\'請先設定 Google Apps Script URL\');return}if(confirm(\'從雲端下載將覆蓋本機資料，確定？\'))cloudLoad()" title="從雲端下載">☁↓</button>';
+  h+='<button onclick="S.v=\'setup\';render()" style="background:rgba(127,127,127,.12);border:1px solid rgba(127,127,127,.2);color:#7b8da4;padding:5px 10px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit" title="設定">⚙️</button>';
   h+='</div></div>';
   h+='<div class="pst">';
   if(S.lastUp)h+='<span class="dot"></span>'+(S.pLoading?"更新中...":"更新於 "+timeAgo(S.lastUp));
