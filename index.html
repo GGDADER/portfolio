@@ -136,7 +136,7 @@ function renderSetup(){
 }
 
 function gasCode(){
-  return "var SHEET_NAME = 'Data';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n    sh.clear();\n    sh.getRange('A1').setValue(d.trades || '[]');\n    sh.getRange('B1').setValue(d.prices || '{}');\n    return jsonOut({ok:true});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction readData() {\n  try {\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:false,msg:'no sheet'});\n    var trades = sh.getRange('A1').getValue();\n    var prices = sh.getRange('B1').getValue();\n    return jsonOut({ok:true,trades:trades,prices:prices});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}";
+  return "var SHEET_NAME = 'Data';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n    sh.clear();\n    sh.getRange('A1').setValue(d.trades || '[]');\n    sh.getRange('B1').setValue(d.prices || '{}');\n    sh.getRange('C1').setValue(d.history || '[]');\n    return jsonOut({ok:true});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction readData() {\n  try {\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:false,msg:'no sheet'});\n    var trades = sh.getRange('A1').getValue();\n    var prices = sh.getRange('B1').getValue();\n    var history = sh.getRange('C1').getValue();\n    return jsonOut({ok:true,trades:trades,prices:prices,history:history||'[]'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}";
 }
 
 function copyGAS(){
@@ -158,7 +158,8 @@ function esc(s){return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;")
 function cloudSave(){
   if(!GS){toast("請先設定 Google Apps Script URL");return}
   S.syncing=true;render();
-  fetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr)})}).then(function(){S.synced=true;S.syncing=false;toast("已上傳至雲端 ✓")}).catch(function(){S.syncing=false;toast("上傳失敗");render()});
+  var hist=ld(HK,[]);
+  fetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr),history:JSON.stringify(hist)})}).then(function(){S.synced=true;S.syncing=false;toast("已上傳至雲端 ✓")}).catch(function(){S.syncing=false;toast("上傳失敗");render()});
 }
 /* Cloud: manual download — FULL REPLACE, no merge */
 function cloudLoad(){
@@ -171,6 +172,8 @@ function cloudLoad(){
         var valid=[];
         for(var i=0;i<ct.length;i++){var t=ct[i];if(!t||!t.id)continue;if(!t.symbol||String(t.symbol).replace(/\s/g,"")==="")continue;if(!t.action)t.action="buy";if(!t.price&&t.price!==0)t.price=0;if(!t.qty&&t.qty!==0)t.qty=0;if(t.qty<=0)continue;if(!t.date)t.date="2025-01-01";if(!t.cur)t.cur=isTW(t.symbol)?"TWD":"USD";if(!t.type)t.type="stock";valid.push(t)}
         S.tr=valid;for(var k in cp)S.pr[k]=cp[k];sv(TK,S.tr);sv(PK,S.pr);
+        /* Also restore history if present */
+        if(d.history){try{var ch=JSON.parse(d.history);if(Array.isArray(ch)&&ch.length)sv(HK,ch)}catch(e){}}
       }
       S.synced=true;toast("已從雲端下載 ✓")}catch(e){toast("雲端資料解析失敗")}}else{toast("雲端無資料")}
     S.syncing=false;render();
