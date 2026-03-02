@@ -358,14 +358,17 @@ function render(){try{
     if(!S.tr.length){
       h+='<div style="text-align:center;padding:60px 20px"><div style="font-size:48px;margin-bottom:16px">📊</div><div style="font-weight:600;font-size:20px;margin-bottom:8px">開始追蹤投資</div><div style="color:#7b8da4;font-size:14px;margin-bottom:24px">支援美股+台股 · 手動雲端同步</div></div>';
     } else {
-      var tMV=0,tU=0,tRP=0,tTC=0;
-      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s);var tw=x.cur==="TWD";var mv=p?p*x.q*(tw?1000:1):x.c;tMV+=toDisp(mv,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur)}
+      var tMV=0,tU=0,tRP=0,tTC=0,tDay=0;
+      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s);var tw=x.cur==="TWD";var mv=p?p*x.q*(tw?1000:1):x.c;tMV+=toDisp(mv,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur);
+        var prData=S.pr[x.s];var pcv=prData&&prData.pc?prData.pc:null;if(p&&pcv){tDay+=toDisp((p-pcv)*x.q*(tw?1000:1),x.cur)}}
       for(var i=0;i<pf.cl.length;i++){if(!isHidden(pf.cl[i].s))tRP+=toDisp(pf.cl[i].pnl,pf.cl[i].cur)}
       var totalPnl=tU+tRP,totalPnlPct=tTC>0?(totalPnl/tTC*100):0,D=ds();
+      var dayPct=tMV>0?(tDay/(tMV-tDay)*100):0,dayCol=tDay>=0?"#00ddb8":"#f44";
       h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">';
       h+=sc("持倉市值",H(D+dfm(tMV)),"#5b9cf5")+sc("未實現盈虧",H((tU>=0?"+":"-")+D+dfm(Math.abs(tU))),tU>=0?"#00ddb8":"#f44");
       h+=sc("已實現盈虧",H((tRP>=0?"+":"-")+D+dfm(Math.abs(tRP))),tRP>=0?"#00ddb8":"#f44")+sc("持倉成本",H(D+dfm(tTC)),"#a48bf5");
       h+='</div>';
+      h+='<div class="cd" style="border-left:3px solid '+dayCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:12px;color:#7b8da4;margin-bottom:2px">今日盈虧</div><div style="font-size:20px;font-weight:700;color:'+dayCol+'">'+H((tDay>=0?"+":"-")+D+dfm(Math.abs(tDay)))+'</div></div><div style="font-size:18px;font-weight:700;color:'+dayCol+'">'+H((dayPct>=0?"+":"")+fm(dayPct)+"%")+'</div></div>';
       var tpc=totalPnl>=0?"#00ddb8":"#f44";
       h+='<div class="cd" style="border-left:3px solid '+tpc+';margin-bottom:16px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:12px;color:#7b8da4;margin-bottom:2px">總盈虧（未實現＋已實現）</div><div style="font-size:20px;font-weight:700;color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+'</div></div><div style="font-size:18px;font-weight:700;color:'+tpc+'">'+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+'</div></div>';
       /* Chart */
