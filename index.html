@@ -289,6 +289,57 @@ function renderChart(data,w,ht){
   return hd+s;
 }
 
+/* Donut Chart for portfolio allocation */
+function renderDonut(slices,total){
+  var colors=["#00ddb8","#5b9cf5","#a48bf5","#fbbf24","#f44","#60a5fa","#f472b6","#34d399","#fb923c","#c084fc"];
+  var cx=90,cy=90,R=70,r=45,D=ds();
+  var s='<div class="cd" style="padding:16px;margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">📊 持倉比例</div>';
+  s+='<div style="display:flex;align-items:center;gap:16px"><div>';
+  s+='<svg width="180" height="180" viewBox="0 0 180 180">';
+  var startAngle=-Math.PI/2;
+  for(var i=0;i<slices.length;i++){
+    var pct=total>0?slices[i].v/total:0;
+    if(pct<=0)continue;
+    var angle=pct*Math.PI*2;
+    var endAngle=startAngle+angle;
+    var large=angle>Math.PI?1:0;
+    var x1=cx+R*Math.cos(startAngle),y1=cy+R*Math.sin(startAngle);
+    var x2=cx+R*Math.cos(endAngle),y2=cy+R*Math.sin(endAngle);
+    var ix1=cx+r*Math.cos(startAngle),iy1=cy+r*Math.sin(startAngle);
+    var ix2=cx+r*Math.cos(endAngle),iy2=cy+r*Math.sin(endAngle);
+    var col=colors[i%colors.length];
+    if(slices.length===1){
+      s+='<circle cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="'+col+'"/>';
+      s+='<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="#131c2e"/>';
+    } else {
+      var gap=0.02;var sa=startAngle+gap,ea=endAngle-gap;
+      if(ea<=sa)ea=sa+0.01;
+      x1=cx+R*Math.cos(sa);y1=cy+R*Math.sin(sa);
+      x2=cx+R*Math.cos(ea);y2=cy+R*Math.sin(ea);
+      ix1=cx+r*Math.cos(ea);iy1=cy+r*Math.sin(ea);
+      ix2=cx+r*Math.cos(sa);iy2=cy+r*Math.sin(sa);
+      s+='<path d="M'+x1.toFixed(2)+','+y1.toFixed(2)+' A'+R+','+R+' 0 '+large+',1 '+x2.toFixed(2)+','+y2.toFixed(2)+' L'+ix1.toFixed(2)+','+iy1.toFixed(2)+' A'+r+','+r+' 0 '+large+',0 '+ix2.toFixed(2)+','+iy2.toFixed(2)+' Z" fill="'+col+'"/>';
+    }
+    startAngle=endAngle;
+  }
+  s+='<text x="'+cx+'" y="'+(cy-4)+'" text-anchor="middle" fill="#e0e7f0" font-size="11" font-weight="700">'+slices.length+'</text>';
+  s+='<text x="'+cx+'" y="'+(cy+10)+'" text-anchor="middle" fill="#7b8da4" font-size="9">檔持倉</text>';
+  s+='</svg></div>';
+  s+='<div style="flex:1;font-size:12px">';
+  for(var i=0;i<slices.length;i++){
+    var pct=total>0?(slices[i].v/total*100):0;
+    var col=colors[i%colors.length];
+    s+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">';
+    s+='<div style="width:8px;height:8px;border-radius:2px;background:'+col+';flex-shrink:0"></div>';
+    s+='<span style="font-weight:600;color:#e0e7f0;min-width:50px">'+slices[i].s+'</span>';
+    s+='<span style="color:#7b8da4">'+fm(pct)+'%</span>';
+    s+='<span style="color:#7b8da4;font-size:11px;margin-left:auto">'+D+dfm(slices[i].v)+'</span>';
+    s+='</div>';
+  }
+  s+='</div></div></div>';
+  return s;
+}
+
 function render(){try{
   var app=document.getElementById("app"),pf=calc(),h="";
 
@@ -422,6 +473,13 @@ function render(){try{
       var cd=getHistRange(S.chartRange,S.chartCustom?S.chartCustom.from:null,S.chartCustom?S.chartCustom.to:null);
       h+=renderChart(cd,440,180);
       h+='</div>';
+      /* Portfolio Allocation Donut Chart */
+      var slices=[];
+      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s);var tw=x.cur==="TWD";var mv=p?p*x.q*(tw?1000:1):x.c;slices.push({s:x.s,v:toDisp(mv,x.cur)})}
+      if(slices.length>1){
+        slices.sort(function(a,b){return b.v-a.v});
+        h+=renderDonut(slices,tMV);
+      }
       h+='<div style="font-size:13px;font-weight:600;color:#7b8da4;margin-bottom:12px">持倉（點擊查看詳情）</div>';
       for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s);var tw=x.cur==="TWD";var ps=tw?"NT$":"$";var f=tw?fmTW:fm;
         var avgPS=tw?x.avg/1000:x.avg,mV=p?p*x.q*(tw?1000:1):null,u=p?(p*(tw?1000:1)-x.avg)*x.q:null,rt=p?((p*(tw?1000:1)-x.avg)/x.avg)*100:null,pc=u!=null?(u>=0?"#00ddb8":"#f44"):"#7b8da4";
