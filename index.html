@@ -51,6 +51,11 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .blur{filter:blur(8px);user-select:none;-webkit-user-select:none}
 .ctp{display:inline-block;padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid #1e2d45;background:0;color:#7b8da4;font-family:inherit;margin:0 2px 4px}
 .ctp.on{background:rgba(0,221,184,.12);color:#00ddb8;border-color:#00ddb8}
+.chart-wrap{position:relative;width:100%}
+.chart-tip{position:absolute;pointer-events:none;background:#0b1120;border:1px solid #00ddb8;border-radius:8px;padding:6px 10px;font-size:11px;color:#e0e7f0;white-space:nowrap;z-index:5;opacity:0;transition:opacity .12s;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.chart-tip.on{opacity:1}
+.chart-tip .td{color:#7b8da4;font-size:10px;margin-bottom:2px}
+.chart-tip .tv{font-weight:700;font-size:13px}
 @keyframes fadeout{to{opacity:0}}
 </style>
 </head>
@@ -68,6 +73,9 @@ function fmTW(n){return n!=null&&!isNaN(n)?Math.round(n).toLocaleString():"—"}
 function isTW(s){return/^\d{4,6}$/.test(s)}
 
 var S={tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,del:null,pv:"",pLoading:false,lastUp:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),hide:ld("pt_hide",false),synced:false,syncing:false,chartRange:"1M",chartCustom:null,hiddenSyms:ld("pt_hidden",[])};
+
+/* Chart hover state (kept outside render() so re-render doesn't wipe it) */
+var CHART_DATA=null;
 
 /* Startup: purge invalid trades */
 (function(){var c=[],d=false;for(var i=0;i<S.tr.length;i++){var t=S.tr[i];if(t&&t.id&&t.symbol&&String(t.symbol).replace(/\s/g,"")!==""&&t.price!=null&&t.qty!=null&&t.qty>0){c.push(t)}else{d=true}}if(d){S.tr=c;sv(TK,S.tr)}})();
@@ -265,31 +273,128 @@ function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.t
 function isHidden(sym){return S.hiddenSyms.indexOf(sym)>=0}
 function toggleHidePos(sym){var idx=S.hiddenSyms.indexOf(sym);if(idx>=0){S.hiddenSyms.splice(idx,1)}else{S.hiddenSyms.push(sym)}sv("pt_hidden",S.hiddenSyms);render()}
 
-/* SVG Chart */
+/* SVG Chart
+   Bug fix 2: increased bottom padding (pb) and viewBox height so x-axis date labels are not clipped.
+   Bug fix 3: added a wrapping container, transparent hover overlay rect, an invisible hover dot/line,
+              and a tooltip div. JS attaches mousemove/touchmove handlers after innerHTML is set.
+   Bug fix 1: when hide mode is on, the change summary, last value, and y-axis labels are blurred.
+*/
 function renderChart(data,w,ht){
   if(!data||data.length<2)return'<div style="text-align:center;color:#7b8da4;padding:30px 0;font-size:13px">需要至少 2 天數據才能繪製圖表<br><span style="font-size:11px">每次更新報價時自動記錄</span></div>';
-  var pad=50,pr=10,pt=20,pb=10,cw=w-pad-pr,ch=ht-pt-pb;
+  /* Bug 2: enlarge bottom padding so date labels (placed at pt+ch+12) fit inside viewBox */
+  var pad=50,pr=10,pt=20,pb=28,cw=w-pad-pr,ch=ht-pt-pb;
   var vals=[];for(var i=0;i<data.length;i++)vals.push(data[i].v);
   var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);if(mn===mx){mn*=.99;mx*=1.01}
   var pts=[];for(var i=0;i<data.length;i++){var x=pad+(i/(data.length-1))*cw;var y=pt+ch-(((data[i].v-mn)/(mx-mn))*ch);pts.push({x:x,y:y})}
   var path="";for(var i=0;i<pts.length;i++)path+=(i===0?"M":"L")+pts[i].x.toFixed(1)+","+pts[i].y.toFixed(1);
   var first=data[0].v,last=data[data.length-1].v,chg=last-first,chgP=first>0?((last-first)/first*100):0,isUp=chg>=0,col=isUp?"#00ddb8":"#f44",D=ds();
   var fill=path+"L"+pts[pts.length-1].x.toFixed(1)+","+(pt+ch)+"L"+pts[0].x.toFixed(1)+","+(pt+ch)+"Z";
-  var s='<svg width="100%" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="xMidYMid meet" style="display:block">';
+
+  /* Stash data needed for tooltip lookup on hover. Stored globally so the inline handler can read it. */
+  CHART_DATA={pts:pts,data:data,pad:pad,pr:pr,pt:pt,pb:pb,cw:cw,ch:ch,w:w,ht:ht,col:col,D:D};
+
+  var s='<svg id="chartSvg" width="100%" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="xMidYMid meet" style="display:block">';
   s+='<defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+col+'" stop-opacity="0.25"/><stop offset="100%" stop-color="'+col+'" stop-opacity="0.02"/></linearGradient></defs>';
-  for(var g=0;g<=3;g++){var gy=pt+(ch/3)*g;s+='<line x1="'+pad+'" y1="'+gy.toFixed(1)+'" x2="'+(pad+cw)+'" y2="'+gy.toFixed(1)+'" stroke="#1e2d45" stroke-width="0.5"/>';var gv=mx-((mx-mn)/3)*g;s+='<text x="'+(pad-4)+'" y="'+(gy+4).toFixed(1)+'" fill="#7b8da4" font-size="9" text-anchor="end">'+dfm(gv)+'</text>'}
+  for(var g=0;g<=3;g++){
+    var gy=pt+(ch/3)*g;
+    s+='<line x1="'+pad+'" y1="'+gy.toFixed(1)+'" x2="'+(pad+cw)+'" y2="'+gy.toFixed(1)+'" stroke="#1e2d45" stroke-width="0.5"/>';
+    var gv=mx-((mx-mn)/3)*g;
+    /* Bug 1: blur y-axis labels in hide mode. SVG <text> with filter:blur respects CSS filter. */
+    var blurStyle=S.hide?' style="filter:blur(4px)"':'';
+    s+='<text x="'+(pad-4)+'" y="'+(gy+4).toFixed(1)+'" fill="#7b8da4" font-size="9" text-anchor="end"'+blurStyle+'>'+dfm(gv)+'</text>';
+  }
   s+='<path d="'+fill+'" fill="url(#cg)"/><path d="'+path+'" fill="none" stroke="'+col+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   var fl=pts[0],ll=pts[pts.length-1];
   s+='<circle cx="'+fl.x.toFixed(1)+'" cy="'+fl.y.toFixed(1)+'" r="3.5" fill="'+col+'"/>';
   s+='<circle cx="'+ll.x.toFixed(1)+'" cy="'+ll.y.toFixed(1)+'" r="3.5" fill="'+col+'"/>';
-  s+='<text x="'+fl.x.toFixed(1)+'" y="'+(pt+ch+12)+'" fill="#7b8da4" font-size="8" text-anchor="start">'+data[0].d.slice(5)+'</text>';
-  s+='<text x="'+ll.x.toFixed(1)+'" y="'+(pt+ch+12)+'" fill="#7b8da4" font-size="8" text-anchor="end">'+data[data.length-1].d.slice(5)+'</text>';
+  /* Date labels don't need to be blurred (they're not sensitive) */
+  s+='<text x="'+fl.x.toFixed(1)+'" y="'+(pt+ch+14)+'" fill="#7b8da4" font-size="9" text-anchor="start">'+data[0].d.slice(5)+'</text>';
+  s+='<text x="'+ll.x.toFixed(1)+'" y="'+(pt+ch+14)+'" fill="#7b8da4" font-size="9" text-anchor="end">'+data[data.length-1].d.slice(5)+'</text>';
+  /* Hover indicator group (initially hidden) */
+  s+='<g id="chartHover" style="display:none;pointer-events:none"><line id="chartHoverLine" x1="0" y1="'+pt+'" x2="0" y2="'+(pt+ch)+'" stroke="'+col+'" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/><circle id="chartHoverDot" cx="0" cy="0" r="4.5" fill="'+col+'" stroke="#0b1120" stroke-width="2"/></g>';
+  /* Transparent overlay rect captures pointer events across the plot area */
+  s+='<rect id="chartOverlay" x="'+pad+'" y="'+pt+'" width="'+cw+'" height="'+ch+'" fill="transparent" style="cursor:crosshair"/>';
   s+='</svg>';
-  var hd='<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px"><div><div style="font-size:11px;color:#7b8da4">資產變化</div><div style="font-size:20px;font-weight:700;color:'+col+'">'+(isUp?"+":"")+D+dfm(chg)+'</div><div style="font-size:13px;color:'+col+'">'+(isUp?"+":"")+fm(chgP)+'%</div></div><div style="text-align:right"><div style="font-size:11px;color:#7b8da4">最新</div><div style="font-size:15px;font-weight:600">'+H(D+dfm(last))+'</div></div></div>';
-  return hd+s;
+
+  /* Bug 1: blur the header summary numbers in hide mode */
+  var hd='<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px">'
+    +'<div><div style="font-size:11px;color:#7b8da4">資產變化</div>'
+    +'<div style="font-size:20px;font-weight:700;color:'+col+'">'+H((isUp?"+":"")+D+dfm(chg))+'</div>'
+    +'<div style="font-size:13px;color:'+col+'">'+H((isUp?"+":"")+fm(chgP)+"%")+'</div></div>'
+    +'<div style="text-align:right"><div style="font-size:11px;color:#7b8da4">最新</div>'
+    +'<div style="font-size:15px;font-weight:600">'+H(D+dfm(last))+'</div></div></div>';
+
+  return hd+'<div class="chart-wrap" id="chartWrap">'+s+'<div class="chart-tip" id="chartTip"><div class="td" id="chartTipDate"></div><div class="tv" id="chartTipVal"></div></div></div>';
 }
 
-/* Donut Chart for portfolio allocation */
+/* Attach hover/touch listeners to the chart after it's in the DOM.
+   Called from render() after innerHTML assignment. */
+function attachChartHover(){
+  if(!CHART_DATA)return;
+  var svg=document.getElementById("chartSvg");
+  var overlay=document.getElementById("chartOverlay");
+  var hover=document.getElementById("chartHover");
+  var line=document.getElementById("chartHoverLine");
+  var dot=document.getElementById("chartHoverDot");
+  var tip=document.getElementById("chartTip");
+  var tipDate=document.getElementById("chartTipDate");
+  var tipVal=document.getElementById("chartTipVal");
+  var wrap=document.getElementById("chartWrap");
+  if(!svg||!overlay||!hover||!tip||!wrap)return;
+
+  function findNearest(svgX){
+    var pts=CHART_DATA.pts;var bestI=0,bestD=Infinity;
+    for(var i=0;i<pts.length;i++){var d=Math.abs(pts[i].x-svgX);if(d<bestD){bestD=d;bestI=i}}
+    return bestI;
+  }
+
+  function moveHandler(clientX){
+    /* Map clientX from CSS px → SVG viewBox coordinates */
+    var rect=svg.getBoundingClientRect();
+    if(rect.width<=0)return;
+    var ratio=CHART_DATA.w/rect.width;
+    var svgX=(clientX-rect.left)*ratio;
+    var idx=findNearest(svgX);
+    var pt=CHART_DATA.pts[idx];
+    var d=CHART_DATA.data[idx];
+    hover.style.display="block";
+    line.setAttribute("x1",pt.x.toFixed(1));
+    line.setAttribute("x2",pt.x.toFixed(1));
+    dot.setAttribute("cx",pt.x.toFixed(1));
+    dot.setAttribute("cy",pt.y.toFixed(1));
+    /* Tooltip positioning in CSS px relative to wrap */
+    var wrapRect=wrap.getBoundingClientRect();
+    var cssX=pt.x/ratio;
+    var cssY=pt.y/ratio;
+    tipDate.textContent=d.d;
+    /* Bug 1: respect hide mode for tooltip value */
+    if(S.hide){tipVal.innerHTML='<span class="blur">'+CHART_DATA.D+dfm(d.v)+'</span>'}
+    else{tipVal.textContent=CHART_DATA.D+dfm(d.v)}
+    tip.classList.add("on");
+    /* Position tip so it doesn't overflow */
+    var tipW=tip.offsetWidth||80;
+    var tipH=tip.offsetHeight||40;
+    var tx=cssX-tipW/2;
+    if(tx<2)tx=2;
+    if(tx+tipW>wrapRect.width-2)tx=wrapRect.width-tipW-2;
+    var ty=cssY-tipH-10;
+    if(ty<2)ty=cssY+12;
+    tip.style.left=tx+"px";
+    tip.style.top=ty+"px";
+  }
+  function leaveHandler(){hover.style.display="none";tip.classList.remove("on")}
+
+  overlay.addEventListener("mousemove",function(e){moveHandler(e.clientX)});
+  overlay.addEventListener("mouseleave",leaveHandler);
+  /* Touch support */
+  overlay.addEventListener("touchstart",function(e){if(e.touches.length){moveHandler(e.touches[0].clientX);e.preventDefault()}},{passive:false});
+  overlay.addEventListener("touchmove",function(e){if(e.touches.length){moveHandler(e.touches[0].clientX);e.preventDefault()}},{passive:false});
+  overlay.addEventListener("touchend",leaveHandler);
+  overlay.addEventListener("touchcancel",leaveHandler);
+}
+
+/* Donut Chart for portfolio allocation
+   Bug 1: symbol name and value are wrapped in H() so they blur in hide mode. */
 function renderDonut(slices,total){
   var colors=["#00ddb8","#5b9cf5","#a48bf5","#fbbf24","#f44","#60a5fa","#f472b6","#34d399","#fb923c","#c084fc"];
   var cx=90,cy=90,R=70,r=45,D=ds();
@@ -322,6 +427,7 @@ function renderDonut(slices,total){
     }
     startAngle=endAngle;
   }
+  /* Center label: total count is structural, not sensitive */
   s+='<text x="'+cx+'" y="'+(cy-4)+'" text-anchor="middle" fill="#e0e7f0" font-size="11" font-weight="700">'+slices.length+'</text>';
   s+='<text x="'+cx+'" y="'+(cy+10)+'" text-anchor="middle" fill="#7b8da4" font-size="9">檔持倉</text>';
   s+='</svg></div>';
@@ -331,9 +437,10 @@ function renderDonut(slices,total){
     var col=colors[i%colors.length];
     s+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">';
     s+='<div style="width:8px;height:8px;border-radius:2px;background:'+col+';flex-shrink:0"></div>';
-    s+='<span style="font-weight:600;color:#e0e7f0;min-width:50px">'+slices[i].s+'</span>';
-    s+='<span style="color:#7b8da4">'+fm(pct)+'%</span>';
-    s+='<span style="color:#7b8da4;font-size:11px;margin-left:auto">'+D+dfm(slices[i].v)+'</span>';
+    /* Bug 1: blur symbol, percentage and value in hide mode */
+    s+='<span style="font-weight:600;color:#e0e7f0;min-width:50px">'+H(slices[i].s)+'</span>';
+    s+='<span style="color:#7b8da4">'+H(fm(pct)+"%")+'</span>';
+    s+='<span style="color:#7b8da4;font-size:11px;margin-left:auto">'+H(D+dfm(slices[i].v))+'</span>';
     s+='</div>';
   }
   s+='</div></div></div>';
@@ -471,7 +578,8 @@ function render(){try{
       h+='<button class="ctp'+(S.chartRange==="custom"?" on":"")+'" onclick="S.chartRange=\'custom\';if(!S.chartCustom)S.chartCustom={};render()">自定義</button></div>';
       if(S.chartRange==="custom"){var ccf=S.chartCustom&&S.chartCustom.from||"",cct=S.chartCustom&&S.chartCustom.to||"";h+='<div style="display:flex;gap:8px;margin-bottom:10px"><input type="date" class="inp" style="flex:1;font-size:12px;padding:8px" value="'+ccf+'" onchange="if(!S.chartCustom)S.chartCustom={};S.chartCustom.from=this.value;render()"><input type="date" class="inp" style="flex:1;font-size:12px;padding:8px" value="'+cct+'" onchange="if(!S.chartCustom)S.chartCustom={};S.chartCustom.to=this.value;render()"></div>'}
       var cd=getHistRange(S.chartRange,S.chartCustom?S.chartCustom.from:null,S.chartCustom?S.chartCustom.to:null);
-      h+=renderChart(cd,440,180);
+      /* Bug 2: viewBox height now 210 (180 + extra bottom padding for date labels) */
+      h+=renderChart(cd,440,210);
       h+='</div>';
       /* Portfolio Allocation Donut Chart */
       var slices=[];
@@ -488,10 +596,12 @@ function render(){try{
           var prData=S.pr[x.s];var pcv=prData&&prData.pc?prData.pc:null;
           var dayChg=pcv?(p-pcv):null;var dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null;
           var dcCol=dayChg!=null?(dayChg>=0?"#00ddb8":"#f44"):"#5b9cf5";
-          cpStr='<span style="color:'+dcCol+';font-size:11px;margin-left:4px">📍'+ps+f(p);
-          if(dayChg!=null)cpStr+=' <span style="font-size:10px">'+(dayChg>=0?"+":"")+fm(dayChg)+'('+(dayPct>=0?"+":"")+fm(dayPct)+'%)</span>';
+          /* Bug 1: blur per-share price + day change in hide mode */
+          var priceFrag='📍'+ps+f(p);
+          if(dayChg!=null)priceFrag+=' <span style="font-size:10px">'+(dayChg>=0?"+":"")+fm(dayChg)+'('+(dayPct>=0?"+":"")+fm(dayPct)+'%)</span>';
+          cpStr='<span style="color:'+dcCol+';font-size:11px;margin-left:4px">'+H(priceFrag);
           var dayUPnl=pcv?(p-pcv)*x.q*(tw?1000:1):null;
-          if(dayUPnl!=null){var duCol=dayUPnl>=0?"#00ddb8":"#f44";cpStr+='<br><span style="font-size:10px;color:'+duCol+'">'+(dayUPnl>=0?"+":"-")+ps+f(Math.abs(dayUPnl))+'</span>'}
+          if(dayUPnl!=null){var duCol=dayUPnl>=0?"#00ddb8":"#f44";cpStr+='<br><span style="font-size:10px;color:'+duCol+'">'+H((dayUPnl>=0?"+":"-")+ps+f(Math.abs(dayUPnl)))+'</span>'}
           cpStr+='</span>';
         }
         h+='<div class="cd" style="display:flex;align-items:center;gap:6px">';
@@ -529,7 +639,11 @@ function render(){try{
   fin(h);
 }catch(e){document.getElementById("app").innerHTML='<div style="padding:40px;color:#f44"><b>Error:</b> '+e.message+'</div>'}}
 
-function fin(h){document.getElementById("app").innerHTML=h}
+function fin(h){
+  document.getElementById("app").innerHTML=h;
+  /* Bug 3: bind chart hover after DOM is in place */
+  if(document.getElementById("chartSvg"))attachChartHover();
+}
 function nav(v){return'<div class="nav"><button class="nb '+(v==="home"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'home\'})"><span style="font-size:18px">💼</span>總覽</button><button class="fab" onclick="S.ed=null;initF();set({v:\'form\'})">+</button><button class="nb '+(v==="trades"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'trades\'})"><span style="font-size:18px">📋</span>交易</button></div>'}
 function sc(l,v,c){return'<div class="cd" style="border-left:3px solid '+c+'"><div style="font-size:12px;color:#7b8da4;margin-bottom:6px">'+l+'</div><div style="font-size:18px;font-weight:700;color:'+c+'">'+v+'</div></div>'}
 function sr(l,v,c){return'<div class="sr"><span style="font-size:14px;color:#7b8da4">'+l+'</span><span style="font-weight:600;font-size:15px;color:'+c+'">'+v+'</span></div>'}
