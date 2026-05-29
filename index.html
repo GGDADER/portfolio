@@ -68,7 +68,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .today-card.down .today-pct{background:var(--down-soft2);color:var(--down)}
 .today-spark{position:absolute;right:14px;top:18px;width:96px;height:42px;opacity:.85}
 .today-divider{height:0.5px;background:var(--border);margin:14px -20px 12px}
-.today-breakdown{display:flex;gap:14px;flex-wrap:wrap}
+.today-breakdown{display:flex;gap:10px 14px;flex-wrap:wrap}
 .today-chip{font-size:11px;display:flex;align-items:center;gap:4px}
 .today-chip-sym{color:var(--muted);font-weight:600}
 .today-chip-val{font-weight:700}
@@ -732,18 +732,15 @@ function render(){try{
       h+='<div class="today-label">TODAY · 今日盈虧</div>';
       h+='<div class="today-val">'+H((tDay>=0?"+":"-")+D+dfm(Math.abs(tDay)))+'</div>';
       h+='<div class="today-pct">'+(tDay>=0?"▴":"▾")+' '+H((dayPct>=0?"+":"")+fm(dayPct)+"%")+'</div>';
-      /* Per-symbol breakdown */
+      /* Per-symbol breakdown: show all rows that have a delta. flex-wrap handles overflow naturally. */
       if(todayBreak.rows.length){
         h+='<div class="today-divider"></div>';
         h+='<div class="today-breakdown">';
-        var shown=0;
-        for(var i=0;i<todayBreak.rows.length&&shown<5;i++){
+        for(var i=0;i<todayBreak.rows.length;i++){
           var r=todayBreak.rows[i];if(r.disp==null)continue;
           var col=r.disp>=0?"var(--up)":"var(--down)";
           h+='<div class="today-chip"><span class="today-chip-sym">'+r.s+'</span><span class="today-chip-val" style="color:'+col+'">'+H((r.disp>=0?"+":"-")+dfmK(Math.abs(r.disp)))+'</span></div>';
-          shown++;
         }
-        if(todayBreak.rows.length>5)h+='<div class="today-chip"><span class="today-chip-sym">+'+(todayBreak.rows.length-5)+' 更多</span></div>';
         h+='</div>';
       }
       h+='</div>';
