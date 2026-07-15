@@ -375,6 +375,7 @@ function getChartData(range,cf,ct){
   var now=new Date(),from;
   if(range==="custom"&&cf){from=new Date(cf);var to=ct?new Date(ct):now;return picked.filter(function(h){var d=new Date(h.d);return d>=from&&d<=to})}
   if(range==="7D"){from=new Date(now);from.setDate(from.getDate()-7)}
+  else if(range==="MTD"){from=new Date(now.getFullYear(),now.getMonth(),1)}
   else if(range==="1M"){from=new Date(now);from.setMonth(from.getMonth()-1)}
   else if(range==="3M"){from=new Date(now);from.setMonth(from.getMonth()-3)}
   else if(range==="6M"){from=new Date(now);from.setMonth(from.getMonth()-6)}
@@ -566,8 +567,8 @@ function renderDonut(slices,total){
     var pct=total>0?(slices[i].v/total*100):0,col=colors[i%colors.length];
     s+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
     s+='<div style="width:7px;height:7px;border-radius:2px;background:'+col+';flex-shrink:0"></div>';
-    s+='<span style="font-weight:700;color:#fff;min-width:48px">'+H(slices[i].s)+'</span>';
-    s+='<span style="color:var(--muted)">'+H(fm(pct)+"%")+'</span>';
+    s+='<span style="font-weight:700;color:#fff;min-width:48px">'+slices[i].s+'</span>';
+    s+='<span style="color:var(--muted)">'+fm(pct)+'%</span>';
     s+='<span style="color:var(--dim);font-size:10px;margin-left:auto">'+H(D+dfm(slices[i].v))+'</span>';
     s+='</div>';
   }
@@ -755,6 +756,18 @@ function render(passive){try{
       for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;slices.push({s:x.s,v:toDisp(mv,x.cur)})}
       if(slices.length>1){slices.sort(function(a,b){return b.v-a.v});h+=renderDonut(slices,tMV)}
 
+      /* === PORTFOLIO === */
+      h+='<div class="section-label">PORTFOLIO · 投資組合</div>';
+      h+='<div class="port-card">';
+      h+='<div class="port-main"><div class="port-label">總資產</div><div class="port-val">'+H(D+dfm(tMV))+'</div>';
+      var tpc=totalPnl>=0?"var(--up)":"var(--down)";
+      h+='<div class="port-sub" style="color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+' 全期 ('+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+')</div>';
+      h+='</div><div class="port-aux">';
+      h+='<div class="port-mini"><span class="port-mini-l">未實現</span><span class="port-mini-v" style="color:'+(tU>=0?"var(--up)":"var(--down)")+'">'+H((tU>=0?"+":"-")+dfmK(Math.abs(tU)))+'</span></div>';
+      h+='<div class="port-mini"><span class="port-mini-l">已實現</span><span class="port-mini-v" style="color:'+(tRP>=0?"var(--up)":"var(--down)")+'">'+H((tRP>=0?"+":"-")+dfmK(Math.abs(tRP)))+'</span></div>';
+      h+='<div class="port-mini"><span class="port-mini-l">成本</span><span class="port-mini-v" style="color:#fff">'+H(dfmK(tTC))+'</span></div>';
+      h+='</div></div>';
+
       /* === PERFORMANCE CARD === */
       h+='<div class="section-label">PERFORMANCE · 績效</div>';
       h+='<div class="perf-card">';
@@ -767,7 +780,7 @@ function render(passive){try{
       var cd=getChartData(S.chartRange,S.chartCustom?S.chartCustom.from:null,S.chartCustom?S.chartCustom.to:null);
       h+=renderChart(cd,440,210);
       /* Range pills */
-      var ranges=["7D","1M","3M","6M","YTD","ALL"];
+      var ranges=["7D","MTD","1M","3M","6M","YTD","ALL"];
       h+='<div class="range-row">';
       for(var ri=0;ri<ranges.length;ri++)h+='<button class="rp '+(S.chartRange===ranges[ri]?"on":"")+'" onclick="S.chartRange=\''+ranges[ri]+'\';render()">'+ranges[ri]+'</button>';
       h+='<button class="rp '+(S.chartRange==="custom"?"on":"")+'" onclick="S.chartRange=\'custom\';if(!S.chartCustom)S.chartCustom={};render()">自訂</button></div>';
@@ -824,17 +837,6 @@ function render(passive){try{
           h+='<div class="card" style="display:flex;justify-content:space-between;align-items:center;opacity:.55;padding:10px 14px;border-radius:14px"><div><div style="font-weight:700;font-size:13px">'+x.s+'</div><div style="font-size:11px;color:var(--muted)">'+H(x.q+(tw?" 張":" 股"))+'</div></div><button onclick="toggleHidePos(\''+x.s+'\')" style="background:var(--up-soft);border:1px solid var(--up);color:var(--up);padding:5px 11px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer">顯示</button></div>'}}
       }
 
-      /* === PORTFOLIO (moved down) === */
-      h+='<div class="section-label">PORTFOLIO · 投資組合</div>';
-      h+='<div class="port-card">';
-      h+='<div class="port-main"><div class="port-label">總資產</div><div class="port-val">'+H(D+dfm(tMV))+'</div>';
-      var tpc=totalPnl>=0?"var(--up)":"var(--down)";
-      h+='<div class="port-sub" style="color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+' 全期 ('+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+')</div>';
-      h+='</div><div class="port-aux">';
-      h+='<div class="port-mini"><span class="port-mini-l">未實現</span><span class="port-mini-v" style="color:'+(tU>=0?"var(--up)":"var(--down)")+'">'+H((tU>=0?"+":"-")+dfmK(Math.abs(tU)))+'</span></div>';
-      h+='<div class="port-mini"><span class="port-mini-l">已實現</span><span class="port-mini-v" style="color:'+(tRP>=0?"var(--up)":"var(--down)")+'">'+H((tRP>=0?"+":"-")+dfmK(Math.abs(tRP)))+'</span></div>';
-      h+='<div class="port-mini"><span class="port-mini-l">成本</span><span class="port-mini-v" style="color:#fff">'+H(dfmK(tTC))+'</span></div>';
-      h+='</div></div>';
 
     }
   } else if(S.v==="closed"){
