@@ -26,9 +26,9 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .hdr{padding:12px 18px;background:rgba(0,0,0,.95);flex-shrink:0;display:flex;justify-content:space-between;align-items:center;z-index:20;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
 .scr{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:100px}
 .cnt{padding:8px 16px}
-.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;display:flex;justify-content:center;align-items:flex-end;gap:24px;padding:10px 20px 14px;background:linear-gradient(to top,#000 60%,transparent);z-index:20}
+.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;display:flex;justify-content:center;align-items:flex-end;gap:14px;padding:10px 16px 14px;background:linear-gradient(to top,#000 60%,transparent);z-index:20}
 @supports(padding:env(safe-area-inset-bottom)){.nav{padding-bottom:calc(14px + env(safe-area-inset-bottom))}.hdr{padding-top:calc(12px + env(safe-area-inset-top))}}
-.nb{background:0;border:0;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;font-size:11px;padding:6px 16px;font-family:inherit;gap:2px}
+.nb{background:0;border:0;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;font-size:11px;padding:6px 10px;font-family:inherit;gap:2px}
 .nb.on{color:var(--up)}
 .fab{width:54px;height:54px;border-radius:50%;background:var(--up);border:0;color:#000;font-size:30px;font-weight:300;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-bottom:4px;box-shadow:0 8px 24px var(--up-glow),0 0 0 4px rgba(0,255,136,.08)}
 .fab:active{transform:scale(.93)}
@@ -231,7 +231,7 @@ function saveCfg(){var fk=document.getElementById("cfg_fk"),gs=document.getEleme
 function clearCfg(){if(confirm("確定要清除所有設定和資料？\n這會刪除本機所有交易、報價、歷史紀錄。")){localStorage.clear();FK="";GS="";S.tr=[];S.pr={};S.ytd={};render()}}
 
 function set(p){for(var k in p)S[k]=p[k];sv(TK,S.tr);render()}
-function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;render()},2000);render()}
+function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;var tn=document.querySelector(".toast");if(tn&&tn.parentNode)tn.parentNode.removeChild(tn)},2000);render()}
 function toDisp(v,cur){return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
 function ds(){return S.cur==="TWD"?"NT$":"$"}
 function dfm(v){return S.cur==="TWD"?fmTW(v):fm(v)}
@@ -325,7 +325,7 @@ function fetchPrices(silent){
         .then(function(){return fetchYtdBaseline(pos.s,pos.cur)})
         .then(function(){return new Promise(function(re){setTimeout(re,400)})})
     })})(pf.op[i])}
-    chain.then(function(){S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);snapHistory();if(!silent)toast(ok?"已更新 "+ok+" 檔報價 ✓":"更新失敗");else render()})
+    chain.then(function(){S.pr=np;S.pLoading=false;S.lastUp=new Date();sv(PK,np);snapHistory();if(!silent)toast(ok?"已更新 "+ok+" 檔報價 ✓":"更新失敗")})
   })
 }
 
@@ -341,7 +341,7 @@ function snapHistory(){
   var found=false;for(var i=0;i<hist.length;i++){if(hist[i].d===today){hist[i]=entry;found=true;break}}
   if(!found)hist.push(entry);
   if(hist.length>365)hist=hist.slice(hist.length-365);
-  sv(HK,hist);render();
+  sv(HK,hist);render(true);
 }
 
 function buildChartSeries(hist){
@@ -438,7 +438,7 @@ function sparkline(series,w,ht,col){
 
 function renderChart(data,w,ht){
   if(!data||data.length<2)return'<div style="text-align:center;color:var(--muted);padding:30px 0;font-size:13px">需要至少 2 天數據才能繪製圖表<br><span style="font-size:11px">每次更新報價時自動記錄</span></div>';
-  var pad=44,pr=10,pt=18,pb=28,cw=w-pad-pr,ch=ht-pt-pb;
+  var pad=54,pr=10,pt=18,pb=30,cw=w-pad-pr,ch=ht-pt-pb;
   var vals=[];for(var i=0;i<data.length;i++)vals.push(data[i].v);
   var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);if(mn===mx){if(mn===0){mn=-1;mx=1}else{mn=mn*0.99;mx=mx*1.01}}
   var pts=[];for(var i=0;i<data.length;i++){var x=pad+(i/(data.length-1))*cw,y=pt+ch-(((data[i].v-mn)/(mx-mn))*ch);pts.push({x:x,y:y})}
@@ -463,13 +463,13 @@ function renderChart(data,w,ht){
 
   var fmtY;
   if(view==="twr")fmtY=function(v){return(v>=0?"+":"")+fm(v)+"%"};
-  else fmtY=function(v){return D+dfm(v)};
+  else fmtY=function(v){return(v<0?"-":"")+D+fmK(Math.abs(v))};
   var zeroLine="";
   if(view!=="mv"&&mn<0&&mx>0){var zy=pt+ch-((0-mn)/(mx-mn))*ch;zeroLine='<line x1="'+pad+'" y1="'+zy.toFixed(1)+'" x2="'+(pad+cw)+'" y2="'+zy.toFixed(1)+'" stroke="#3a3a3a" stroke-width="0.5" stroke-dasharray="3,3"/>'}
 
   var s='<svg id="chartSvg" width="100%" viewBox="0 0 '+w+' '+ht+'" preserveAspectRatio="xMidYMid meet" style="display:block">';
   s+='<defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+col+'" stop-opacity="0.32"/><stop offset="100%" stop-color="'+col+'" stop-opacity="0.02"/></linearGradient></defs>';
-  for(var g=0;g<=3;g++){var gy=pt+(ch/3)*g;s+='<line x1="'+pad+'" y1="'+gy.toFixed(1)+'" x2="'+(pad+cw)+'" y2="'+gy.toFixed(1)+'" stroke="#1a1a1a" stroke-width="0.5"/>';var gv=mx-((mx-mn)/3)*g,blurStyle=S.hide&&view!=="twr"?' style="filter:blur(4px)"':'';s+='<text x="'+(pad-4)+'" y="'+(gy+3.5).toFixed(1)+'" fill="#555" font-size="9" text-anchor="end"'+blurStyle+'>'+fmtY(gv)+'</text>'}
+  for(var g=0;g<=3;g++){var gy=pt+(ch/3)*g;s+='<line x1="'+pad+'" y1="'+gy.toFixed(1)+'" x2="'+(pad+cw)+'" y2="'+gy.toFixed(1)+'" stroke="#1a1a1a" stroke-width="0.5"/>';var gv=mx-((mx-mn)/3)*g,lbl=(S.hide&&view!=="twr")?"•••":fmtY(gv);s+='<text x="'+(pad-4)+'" y="'+(gy+3.5).toFixed(1)+'" fill="#555" font-size="9" text-anchor="end">'+lbl+'</text>'}
   s+=zeroLine;
   s+='<path d="'+fill+'" fill="url(#cg)"/><path d="'+path+'" fill="none" stroke="'+col+'" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
   var fl=pts[0],ll=pts[pts.length-1];
@@ -591,7 +591,12 @@ function computeTodayBreakdown(pf){
   return{rows:rows,total:totalDisp};
 }
 
-function render(){try{
+function render(passive){try{
+  if(passive){
+    var ae=document.activeElement;
+    if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA")){S._pend=true;return}
+    if(S._lastScrollT&&Date.now()-S._lastScrollT<1200){S._pend=true;return}
+  }
   var app=document.getElementById("app"),pf=calc(),h="";
   if(!cfgOk()||S.v==="setup"){fin(renderSetup());return}
 
@@ -610,7 +615,7 @@ function render(){try{
     h+='<div style="font-size:26px;color:#fff;margin-top:14px;font-weight:700;letter-spacing:-0.4px">'+H(mV!=null?ps+f(mV):"尚未設定報價")+'</div>';
     if(rt!=null)h+='<div style="display:inline-block;margin-top:8px;padding:5px 14px;border-radius:10px;background:'+(rt>=0?"var(--up-soft2)":"var(--down-soft2)")+';font-size:13px;font-weight:700;color:'+pc+'">'+H((rt>=0?"▴ +":"▾ ")+fm(rt)+"%")+'</div>';
     h+='</div>';
-    h+='<div class="card" style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;letter-spacing:0.5px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 18px" onclick="savePr()">更新</button></div></div>';
+    h+='<div class="card" style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;letter-spacing:0.5px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" inputmode="decimal" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 18px" onclick="savePr()">更新</button></div></div>';
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     var prData=S.pr[S.det],pcv=prData&&prData.pc?prData.pc:null;
     var dayChg=p&&pcv?(p-pcv):null,dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null,dcCol=dayChg!=null?(dayChg>=0?"var(--up)":"var(--down)"):"var(--muted)";
@@ -647,7 +652,7 @@ function render(){try{
     if(ci<0||ci>=pf2.cl.length){S.v="home";S.clIdx=null;render();return}
     var c=pf2.cl[ci],tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm,un=tw?"張":"股",mul=tw?1000:1;
     var g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",sellTotal=c.price*c.qty*mul,avgBuy=c.cb/(c.qty*mul);
-    h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="set({v:\'home\',clIdx:null})">‹</button><div class="brand"><span class="brand-name">'+c.s+'</span></div><div style="width:36px"></div></div><div class="scr"><div class="cnt">';
+    h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="set({v:\'closed\',clIdx:null})">‹</button><div class="brand"><span class="brand-name">'+c.s+'</span></div><div style="width:36px"></div></div><div class="scr"><div class="cnt">';
     h+='<div style="text-align:center;padding:14px 0 22px"><div style="font-size:28px;font-weight:700">'+c.s+'</div>';
     if(tw)h+='<div style="font-size:10px;color:var(--amber);margin-top:4px;letter-spacing:0.5px;font-weight:600">🇹🇼 台股</div>';
     h+='<div style="margin-top:10px"><span class="badge sell-bg" style="font-size:12px;padding:4px 12px">已平倉</span></div>';
@@ -678,7 +683,7 @@ function render(){try{
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button></div>';
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.action==="buy"?"on":"")+'" onclick="setFAct(\'buy\')">買入</button><button class="tg '+(F.action==="sell"?"sell":"")+'" onclick="setFAct(\'sell\')">賣出</button></div>';
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" style="margin-bottom:14px">';
-    h+='<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
+    h+='<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
     if(tw)h+='<div style="font-size:11px;color:var(--amber);margin-bottom:8px">💡 1張=1000股，總成本 = 股價 × 張數 × 1000</div>';
     var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);
     h+='<div style="display:flex;justify-content:space-between;padding:14px 0;border-bottom:0.5px solid var(--border);margin-bottom:14px"><span style="color:var(--muted);font-size:13px">總金額</span><span id="ftot" style="color:var(--up);font-size:20px;font-weight:700;letter-spacing:-0.4px">'+ps+(tw?fmTW(tot):fm(tot))+'</span></div>';
@@ -745,17 +750,10 @@ function render(){try{
       }
       h+='</div>';
 
-      /* === PORTFOLIO CARD === */
-      h+='<div class="section-label">PORTFOLIO · 投資組合</div>';
-      h+='<div class="port-card">';
-      h+='<div class="port-main"><div class="port-label">總資產</div><div class="port-val">'+H(D+dfm(tMV))+'</div>';
-      var tpc=totalPnl>=0?"var(--up)":"var(--down)";
-      h+='<div class="port-sub" style="color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+' 全期 ('+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+')</div>';
-      h+='</div><div class="port-aux">';
-      h+='<div class="port-mini"><span class="port-mini-l">未實現</span><span class="port-mini-v" style="color:'+(tU>=0?"var(--up)":"var(--down)")+'">'+H((tU>=0?"+":"-")+dfmK(Math.abs(tU)))+'</span></div>';
-      h+='<div class="port-mini"><span class="port-mini-l">已實現</span><span class="port-mini-v" style="color:'+(tRP>=0?"var(--up)":"var(--down)")+'">'+H((tRP>=0?"+":"-")+dfmK(Math.abs(tRP)))+'</span></div>';
-      h+='<div class="port-mini"><span class="port-mini-l">成本</span><span class="port-mini-v" style="color:#fff">'+H(dfmK(tTC))+'</span></div>';
-      h+='</div></div>';
+      /* === ALLOCATION (moved up) === */
+      var slices=[];
+      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;slices.push({s:x.s,v:toDisp(mv,x.cur)})}
+      if(slices.length>1){slices.sort(function(a,b){return b.v-a.v});h+=renderDonut(slices,tMV)}
 
       /* === PERFORMANCE CARD === */
       h+='<div class="section-label">PERFORMANCE · 績效</div>';
@@ -826,23 +824,33 @@ function render(){try{
           h+='<div class="card" style="display:flex;justify-content:space-between;align-items:center;opacity:.55;padding:10px 14px;border-radius:14px"><div><div style="font-weight:700;font-size:13px">'+x.s+'</div><div style="font-size:11px;color:var(--muted)">'+H(x.q+(tw?" 張":" 股"))+'</div></div><button onclick="toggleHidePos(\''+x.s+'\')" style="background:var(--up-soft);border:1px solid var(--up);color:var(--up);padding:5px 11px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer">顯示</button></div>'}}
       }
 
-      /* === ALLOCATION === */
-      var slices=[];
-      for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;slices.push({s:x.s,v:toDisp(mv,x.cur)})}
-      if(slices.length>1){slices.sort(function(a,b){return b.v-a.v});h+=renderDonut(slices,tMV)}
+      /* === PORTFOLIO (moved down) === */
+      h+='<div class="section-label">PORTFOLIO · 投資組合</div>';
+      h+='<div class="port-card">';
+      h+='<div class="port-main"><div class="port-label">總資產</div><div class="port-val">'+H(D+dfm(tMV))+'</div>';
+      var tpc=totalPnl>=0?"var(--up)":"var(--down)";
+      h+='<div class="port-sub" style="color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+' 全期 ('+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+')</div>';
+      h+='</div><div class="port-aux">';
+      h+='<div class="port-mini"><span class="port-mini-l">未實現</span><span class="port-mini-v" style="color:'+(tU>=0?"var(--up)":"var(--down)")+'">'+H((tU>=0?"+":"-")+dfmK(Math.abs(tU)))+'</span></div>';
+      h+='<div class="port-mini"><span class="port-mini-l">已實現</span><span class="port-mini-v" style="color:'+(tRP>=0?"var(--up)":"var(--down)")+'">'+H((tRP>=0?"+":"-")+dfmK(Math.abs(tRP)))+'</span></div>';
+      h+='<div class="port-mini"><span class="port-mini-l">成本</span><span class="port-mini-v" style="color:#fff">'+H(dfmK(tTC))+'</span></div>';
+      h+='</div></div>';
 
-      /* === CLOSED === */
-      if(pf.cl.length){
-        var clRP=0,clCB=0;for(var i=0;i<pf.cl.length;i++){if(!isHidden(pf.cl[i].s)){var c2=pf.cl[i];clRP+=toDisp(c2.pnl,c2.cur);clCB+=toDisp(c2.cb,c2.cur)}}
-        var clPct=clCB>0?(clRP/clCB*100):0,clCol=clRP>=0?"var(--up)":"var(--down)";
-        h+='<div class="section-label">CLOSED · 已平倉</div>';
-        h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
-        for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i],cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=c.date||"",g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
-          h+='<div class="hold" onclick="S.clIdx='+i+';set({v:\'cldet\'})"><div class="hold-top">';
-          h+='<div class="hold-logo" style="background:'+(g?"var(--up-soft)":"var(--down-soft)")+';color:'+cl2+';font-size:14px">✓</div>';
-          h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(cQty+(tw?" 張":" 股"))+" @ "+ps+f(cPrice)+" · "+cDate+'</div></div>';
-          h+='<div class="hold-right"><div class="hold-pnl" style="color:'+cl2+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div class="hold-pnlp" style="color:'+cl2+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div></div>'}
-      }
+    }
+  } else if(S.v==="closed"){
+    var D=ds();
+    if(!pf.cl.length){
+      h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">🏁</div><div style="font-weight:700;font-size:20px;margin-bottom:8px;letter-spacing:-0.4px">尚無平倉紀錄</div><div style="color:var(--muted);font-size:13px">賣出持倉後就會出現在這裡</div></div>';
+    } else {
+      var clRP=0,clCB=0;for(var i=0;i<pf.cl.length;i++){if(!isHidden(pf.cl[i].s)){var c2=pf.cl[i];clRP+=toDisp(c2.pnl,c2.cur);clCB+=toDisp(c2.cb,c2.cur)}}
+      var clPct=clCB>0?(clRP/clCB*100):0,clCol=clRP>=0?"var(--up)":"var(--down)";
+      h+='<div class="section-label">CLOSED · 已平倉 ('+pf.cl.length+')</div>';
+      h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
+      for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i],cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=c.date||"",g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+        h+='<div class="hold" onclick="S.clIdx='+i+';set({v:\'cldet\'})"><div class="hold-top">';
+        h+='<div class="hold-logo" style="background:'+(g?"var(--up-soft)":"var(--down-soft)")+';color:'+cl2+';font-size:14px">✓</div>';
+        h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(cQty+(tw?" 張":" 股"))+" @ "+ps+f(cPrice)+" · "+cDate+'</div></div>';
+        h+='<div class="hold-right"><div class="hold-pnl" style="color:'+cl2+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div class="hold-pnlp" style="color:'+cl2+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div></div>'}
     }
   } else {
     h+='<div class="section-label">交易紀錄 ('+S.tr.length+')</div>';
@@ -859,18 +867,25 @@ function render(){try{
 }catch(e){document.getElementById("app").innerHTML='<div style="padding:40px;color:var(--down)"><b>Error:</b> '+e.message+'<br><br><small>'+(e.stack||"").replace(/\n/g,"<br>")+'</small></div>'}}
 
 function fin(h){
+  var vk=S.v+"|"+(S.det||"")+"|"+(S.clIdx!=null?S.clIdx:"");
+  var oscr=document.querySelector(".scr"),st=(oscr&&S._vk===vk)?oscr.scrollTop:0;
   document.getElementById("app").innerHTML=h;
+  S._vk=vk;
+  var nscr=document.querySelector(".scr");
+  if(nscr){if(st)nscr.scrollTop=st;nscr.addEventListener("scroll",function(){S._lastScrollT=Date.now()},{passive:true})}
   if(document.getElementById("chartSvg"))attachChartHover();
   if(S.menu){setTimeout(function(){document.addEventListener("click",closeMenuHandler,{once:true})},0)}
 }
 function closeMenuHandler(e){if(!e.target.closest||(!e.target.closest(".dd")&&!e.target.closest("[title='選單']"))){S.menu=false;render()}}
-function nav(v){return'<div class="nav"><button class="nb '+(v==="home"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'home\'})"><span style="font-size:18px">💼</span>總覽</button><button class="fab" onclick="S.ed=null;initF();set({v:\'form\'})">+</button><button class="nb '+(v==="trades"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'trades\'})"><span style="font-size:18px">📋</span>交易</button></div>'}
+function nav(v){return'<div class="nav"><button class="nb '+(v==="home"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'home\'})"><span style="font-size:18px">💼</span>總覽</button><button class="fab" onclick="S.ed=null;initF();set({v:\'form\'})">+</button><button class="nb '+(v==="trades"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'trades\'})"><span style="font-size:18px">📋</span>交易</button><button class="nb '+(v==="closed"?"on":"")+'" onclick="S.ed=null;initF();set({v:\'closed\'})"><span style="font-size:18px">🏁</span>平倉</button></div>'}
 function sr(l,v,c){return'<div class="sr"><span style="font-size:13px;color:var(--muted)">'+l+'</span><span style="font-weight:600;font-size:14px;color:'+c+'">'+v+'</span></div>'}
 function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?"剛剛":m<60?m+"分鐘前":Math.floor(m/60)+"小時前"}
 
 render();
 setTimeout(function(){fetchPrices(true)},2000);
 setInterval(function(){fetchPrices(true)},1800000);
+document.addEventListener("focusout",function(){if(S._pend){setTimeout(function(){var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"))return;S._pend=false;render(true)},350)}});
+setInterval(function(){if(!S._pend)return;var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"))return;if(S._lastScrollT&&Date.now()-S._lastScrollT<1500)return;S._pend=false;render(true)},2500);
 </script>
 </body>
 </html>
