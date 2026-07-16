@@ -399,6 +399,7 @@ function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;var sym=F.symbo
 function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S.det]={p:v,at:Date.now()};S.pv="";saveLocal();toast(S.det+" 報價已更新 ✓");render()}
 function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
 function deletePosition(sym){S.tr=S.tr.filter(function(t){return t.symbol!==sym});S.det=null;S.v="home";S.modal=null;saveLocal();toast(sym+" 已刪除");render()}
+function quickTrade(sym,act){S.ed=null;initF();F.symbol=sym;F.action=act;F.cur=isTW(sym)?"TWD":"USD";var qp=gp(sym);if(qp)F.price=qp;set({v:"form"})}
 function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.tr[i]}return null}
 
 /* Remaining open buy lots for a symbol, replaying all other trades' matching up to a date */
@@ -663,6 +664,7 @@ function render(passive){try{
     h+='<div style="font-size:26px;color:#fff;margin-top:14px;font-weight:700;letter-spacing:-0.4px">'+H(mV!=null?ps+f(mV):"尚未設定報價")+'</div>';
     if(rt!=null)h+='<div style="display:inline-block;margin-top:8px;padding:5px 14px;border-radius:10px;background:'+(rt>=0?"var(--up-soft2)":"var(--down-soft2)")+';font-size:13px;font-weight:700;color:'+pc+'">'+H((rt>=0?"▴ +":"▾ ")+fm(rt)+"%")+'</div>';
     h+='</div>';
+    h+='<div style="display:flex;gap:10px;margin-bottom:10px"><button class="bp" style="padding:12px" onclick="quickTrade(\''+S.det+'\',\'buy\')">＋ 買入</button><button class="bp" style="padding:12px;background:var(--down);color:#fff" onclick="quickTrade(\''+S.det+'\',\'sell\')">－ 賣出</button></div>';
     h+='<div class="card" style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;letter-spacing:0.5px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" inputmode="decimal" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 18px" onclick="savePr()">更新</button></div></div>';
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     var prData=S.pr[S.det],pcv=prData&&prData.pc?prData.pc:null;
