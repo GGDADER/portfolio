@@ -181,6 +181,7 @@ var S={
   chartRange:"1M",chartCustom:null,chartView:ld("pt_cv","mv"),
   hiddenSyms:ld("pt_hidden",[]),
   menu:false,
+  trF:{r:"all",s:"all"},clF:{r:"all",s:"all"},
   ytd:ld(ytdKey(),{}),  /* per-symbol YTD opening price */
   ytdLoading:false,
   ytdFailed:{}  /* per-symbol: true if last fetch attempt failed (transient, not persisted) */
@@ -444,6 +445,28 @@ function buildLotsHtml(){
   h+='<div style="height:8px"></div>';
   return h}
 
+function filterFrom(r){var now=new Date(),d=null;
+  if(r==="today")d=now;
+  else if(r==="7d"){d=new Date(now);d.setDate(d.getDate()-7)}
+  else if(r==="30d"){d=new Date(now);d.setDate(d.getDate()-30)}
+  else if(r==="90d"){d=new Date(now);d.setDate(d.getDate()-90)}
+  else if(r==="mtd")d=new Date(now.getFullYear(),now.getMonth(),1);
+  else if(r==="ytd")d=new Date(now.getFullYear(),0,1);
+  if(!d)return null;
+  var m=("0"+(d.getMonth()+1)).slice(-2),dd=("0"+d.getDate()).slice(-2);
+  return d.getFullYear()+"-"+m+"-"+dd}
+function filterBar(key,fst,symList){
+  var ranges=[["all","全部時間"],["today","今天"],["7d","過去7天"],["30d","過去30天"],["90d","過去90天"],["mtd","本月至今"],["ytd","年初至今"]];
+  var h='<div style="display:flex;gap:8px;margin-bottom:10px">';
+  h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.'+key+'.r=this.value;render()">';
+  for(var i=0;i<ranges.length;i++)h+='<option value="'+ranges[i][0]+'"'+(fst.r===ranges[i][0]?" selected":"")+'>'+ranges[i][1]+'</option>';
+  h+='</select>';
+  h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.'+key+'.s=this.value;render()">';
+  h+='<option value="all"'+(fst.s==="all"?" selected":"")+'>全部個股</option>';
+  for(var i=0;i<symList.length;i++)h+='<option value="'+symList[i]+'"'+(fst.s===symList[i]?" selected":"")+'>'+symList[i]+'</option>';
+  h+='</select></div>';
+  return h}
+
 function gasCode(){
   return "var SHEET_NAME = 'Data';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'ping') return jsonOut({ok:true, msg:'pong', version:'v6'});\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  if (action === 'ytd') return getYtd(e.parameter.sym, e.parameter.mkt, e.parameter.year);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n    sh.clear();\n    sh.getRange('A1').setValue(d.trades || '[]');\n    sh.getRange('B1').setValue(d.prices || '{}');\n    sh.getRange('C1').setValue(d.history || '[]');\n    return jsonOut({ok:true});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction readData() {\n  try {\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:false,msg:'no sheet'});\n    var trades = sh.getRange('A1').getValue();\n    var prices = sh.getRange('B1').getValue();\n    var history = sh.getRange('C1').getValue();\n    return jsonOut({ok:true,trades:trades,prices:prices,history:history||'[]'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\n/* YTD baseline = previous year's LAST trading day CLOSE price.\n   v6: removed Stooq (was hanging GAS via UrlFetchApp). Now Yahoo first, TWSE backup.\n   Each branch wrapped in independent try-catch so one slow source can't kill the others. */\nfunction getYtd(sym, mkt, year) {\n  var y = parseInt(year) || (new Date()).getFullYear();\n  var prevY = y - 1;\n  var tried = [];\n\n  // ---------- 1. Yahoo Finance (works for both US and TW with .TW suffix) ----------\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var p1 = Math.floor(Date.UTC(prevY, 11, 20) / 1000);\n    var p2 = Math.floor(Date.UTC(y, 0, 5) / 1000);\n    var yurl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym)\n      + '?period1=' + p1 + '&period2=' + p2 + '&interval=1d';\n    var opts = {\n      muteHttpExceptions: true,\n      headers: {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}\n    };\n    var yresp = UrlFetchApp.fetch(yurl, opts);\n    var ycode = yresp.getResponseCode();\n    if (ycode === 200) {\n      var body = JSON.parse(yresp.getContentText());\n      var result = body && body.chart && body.chart.result && body.chart.result[0];\n      var ts = result && result.timestamp;\n      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];\n      var closes = quote && quote.close;\n      var cutoff = Math.floor(Date.UTC(y, 0, 1) / 1000);\n      var bestPrice = 0, bestTs = 0;\n      if (ts && closes) {\n        for (var i = 0; i < ts.length; i++) {\n          if (ts[i] < cutoff && closes[i] != null && closes[i] > 0) {\n            if (ts[i] > bestTs) { bestTs = ts[i]; bestPrice = closes[i]; }\n          }\n        }\n      }\n      if (bestPrice > 0) {\n        var dateStr = new Date(bestTs * 1000).toISOString().substring(0, 10);\n        return jsonOut({ok:true, price:bestPrice, source:'yahoo', baselineDate:dateStr, ticker:yhSym, tried:tried});\n      }\n      tried.push({src:'yahoo', reason:'no close before Jan 1'});\n    } else {\n      tried.push({src:'yahoo', reason:'http '+ycode});\n    }\n  } catch(err) { tried.push({src:'yahoo', reason:'err: '+err.message}); }\n\n  // ---------- 2. TWSE STOCK_DAY (TW only) ----------\n  if (mkt === 'tw') {\n    try {\n      var turl = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=' + prevY + '1201&stockNo=' + sym;\n      var tresp = UrlFetchApp.fetch(turl, {muteHttpExceptions:true});\n      var tcode = tresp.getResponseCode();\n      if (tcode === 200) {\n        var r = JSON.parse(tresp.getContentText());\n        if (r.stat === 'OK' && r.data && r.data.length) {\n          var lastRow = r.data[r.data.length - 1];\n          var closeP = parseFloat(String(lastRow[6]).replace(/,/g,''));\n          if (closeP > 0) return jsonOut({ok:true, price:closeP, source:'twse', baselineDate:String(lastRow[0]), ticker:sym, tried:tried});\n        }\n        tried.push({src:'twse', reason:'no data: '+(r.stat||'unknown')});\n      } else {\n        tried.push({src:'twse', reason:'http '+tcode});\n      }\n    } catch(err) { tried.push({src:'twse', reason:'err: '+err.message}); }\n  }\n\n  return jsonOut({ok:false, price:0, tried:tried});\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n";
 }
@@ -636,14 +659,14 @@ function computeTodayBreakdown(pf){
     rows.push({s:x.s,raw:raw,disp:disp,pct:pct,cur:x.cur});
     totalDisp+=disp;
   }
-  rows.sort(function(a,b){var aa=a.disp==null?-Infinity:Math.abs(a.disp),bb=b.disp==null?-Infinity:Math.abs(b.disp);return bb-aa});
+  rows.sort(function(a,b){var aa=a.disp==null?-Infinity:a.disp,bb=b.disp==null?-Infinity:b.disp;return bb-aa});
   return{rows:rows,total:totalDisp};
 }
 
 function render(passive){try{
   if(passive){
     var ae=document.activeElement;
-    if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA")){S._pend=true;return}
+    if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"||ae.tagName==="SELECT")){S._pend=true;return}
     if(S._lastScrollT&&Date.now()-S._lastScrollT<1200){S._pend=true;return}
   }
   var app=document.getElementById("app"),pf=calc(),h="";
@@ -904,19 +927,34 @@ function render(passive){try{
     if(!pf.cl.length){
       h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">🏁</div><div style="font-weight:700;font-size:20px;margin-bottom:8px;letter-spacing:-0.4px">尚無平倉紀錄</div><div style="color:var(--muted);font-size:13px">賣出持倉後就會出現在這裡</div></div>';
     } else {
-      var clRP=0,clCB=0;for(var i=0;i<pf.cl.length;i++){if(!isHidden(pf.cl[i].s)){var c2=pf.cl[i];clRP+=toDisp(c2.pnl,c2.cur);clCB+=toDisp(c2.cb,c2.cur)}}
+      if(!S.clF)S.clF={r:"all",s:"all"};
+      var csyms={};for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].s)csyms[pf.cl[i].s]=1}
+      var csymList=[];for(var ck in csyms)csymList.push(ck);csymList.sort();
+      var cFrom=filterFrom(S.clF.r);
+      var clArr=[];for(var i=0;i<pf.cl.length;i++){var c0=pf.cl[i];if(cFrom&&(!c0.date||c0.date<cFrom))continue;if(S.clF.s!=="all"&&c0.s!==S.clF.s)continue;clArr.push({c:c0,ix:i})}
+      clArr.sort(function(a,b){return a.c.date<b.c.date?1:(a.c.date>b.c.date?-1:0)});
+      var clRP=0,clCB=0;for(var i=0;i<clArr.length;i++){var c2=clArr[i].c;if(!isHidden(c2.s)){clRP+=toDisp(c2.pnl,c2.cur);clCB+=toDisp(c2.cb,c2.cur)}}
       var clPct=clCB>0?(clRP/clCB*100):0,clCol=clRP>=0?"var(--up)":"var(--down)";
-      h+='<div class="section-label">CLOSED · 已平倉 ('+pf.cl.length+')</div>';
+      h+='<div class="section-label">CLOSED · 已平倉 ('+clArr.length+'/'+pf.cl.length+')</div>';
+      h+=filterBar('clF',S.clF,csymList);
       h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
-      for(var i=0;i<pf.cl.length;i++){var c=pf.cl[i],cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=c.date||"",g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
-        h+='<div class="hold" onclick="S.clIdx='+i+';set({v:\'cldet\'})"><div class="hold-top">';
+      if(!clArr.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
+      for(var i=0;i<clArr.length;i++){var c=clArr[i].c,cIx=clArr[i].ix,cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=c.date||"",g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+        h+='<div class="hold" onclick="S.clIdx='+cIx+';set({v:\'cldet\'})"><div class="hold-top">';
         h+='<div class="hold-logo" style="background:'+(g?"var(--up-soft)":"var(--down-soft)")+';color:'+cl2+';font-size:14px">✓</div>';
         h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(cQty+(tw?" 張":" 股"))+" @ "+ps+f(cPrice)+" · "+cDate+'</div></div>';
         h+='<div class="hold-right"><div class="hold-pnl" style="color:'+cl2+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div class="hold-pnlp" style="color:'+cl2+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div></div>'}
     }
   } else {
-    h+='<div class="section-label">交易紀錄 ('+S.tr.length+')</div>';
-    var sorted=S.tr.slice().sort(function(a,b){return new Date(b.date)-new Date(a.date)});
+    if(!S.trF)S.trF={r:"all",s:"all"};
+    var tsyms={};for(var i=0;i<S.tr.length;i++){if(S.tr[i].symbol)tsyms[S.tr[i].symbol]=1}
+    var tsymList=[];for(var tk in tsyms)tsymList.push(tk);tsymList.sort();
+    var tFrom=filterFrom(S.trF.r);
+    var tFiltered=[];for(var i=0;i<S.tr.length;i++){var t0=S.tr[i];if(tFrom&&(!t0.date||t0.date<tFrom))continue;if(S.trF.s!=="all"&&t0.symbol!==S.trF.s)continue;tFiltered.push(t0)}
+    h+='<div class="section-label">交易紀錄 ('+tFiltered.length+'/'+S.tr.length+')</div>';
+    h+=filterBar('trF',S.trF,tsymList);
+    if(!tFiltered.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
+    var sorted=tFiltered.sort(function(a,b){return new Date(b.date)-new Date(a.date)});
     for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
       h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+f(tPrice)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(tQty+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+" · "+t.date+'</div></div>';
       h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
@@ -946,8 +984,8 @@ function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?
 render();
 setTimeout(function(){fetchPrices(true)},2000);
 setInterval(function(){fetchPrices(true)},1800000);
-document.addEventListener("focusout",function(){if(S._pend){setTimeout(function(){var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"))return;S._pend=false;render(true)},350)}});
-setInterval(function(){if(!S._pend)return;var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"))return;if(S._lastScrollT&&Date.now()-S._lastScrollT<1500)return;S._pend=false;render(true)},2500);
+document.addEventListener("focusout",function(){if(S._pend){setTimeout(function(){var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"||ae.tagName==="SELECT"))return;S._pend=false;render(true)},350)}});
+setInterval(function(){if(!S._pend)return;var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"||ae.tagName==="SELECT"))return;if(S._lastScrollT&&Date.now()-S._lastScrollT<1500)return;S._pend=false;render(true)},2500);
 </script>
 </body>
 </html>
