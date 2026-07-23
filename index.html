@@ -68,10 +68,13 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .today-card.down .today-pct{background:var(--down-soft2);color:var(--down)}
 .today-spark{position:absolute;right:14px;top:18px;width:96px;height:42px;opacity:.85}
 .today-divider{height:0.5px;background:var(--border);margin:14px -20px 12px}
-.today-breakdown{display:flex;gap:10px 14px;flex-wrap:wrap}
-.today-chip{font-size:11px;display:flex;align-items:center;gap:4px}
-.today-chip-sym{color:var(--muted);font-weight:600}
-.today-chip-val{font-weight:700}
+.today-breakdown{display:grid;grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:7px 18px}
+.today-chip{font-size:11px;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0}
+.today-chip-l{display:flex;align-items:baseline;gap:5px;min-width:0;overflow:hidden}
+.today-chip-sym{color:var(--muted);font-weight:600;flex-shrink:0}
+.today-chip-px{color:var(--dim);font-size:10px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.today-chip-pct{font-size:10px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.today-chip-val{font-weight:700;flex-shrink:0;white-space:nowrap}
 
 /* === Portfolio summary card (2-pane) === */
 .port-card{background:var(--surface);border-radius:20px;padding:16px 18px;margin-bottom:10px;display:flex;align-items:stretch;gap:16px}
@@ -700,7 +703,7 @@ function computeTodayBreakdown(pf){
     if(!p||!pcv){rows.push({s:x.s,raw:null,disp:null,pct:null,cur:x.cur});continue}
     var tw=x.cur==="TWD",mul=tw?1000:1;
     var raw=(p-pcv)*x.q*mul,disp=toDisp(raw,x.cur),pct=pcv>0?((p-pcv)/pcv*100):0;
-    rows.push({s:x.s,raw:raw,disp:disp,pct:pct,cur:x.cur});
+    rows.push({s:x.s,raw:raw,disp:disp,pct:pct,cur:x.cur,px:p});
     totalDisp+=disp;
   }
   rows.sort(function(a,b){var aa=a.disp==null?-Infinity:a.disp,bb=b.disp==null?-Infinity:b.disp;return bb-aa});
@@ -875,7 +878,11 @@ function render(passive){try{
         for(var i=0;i<todayBreak.rows.length;i++){
           var r=todayBreak.rows[i];if(r.disp==null)continue;
           var col=r.disp>=0?"var(--up)":"var(--down)";
-          h+='<div class="today-chip"><span class="today-chip-sym">'+r.s+'</span><span class="today-chip-val" style="color:'+col+'">'+H((r.disp>=0?"+":"-")+dfmK(Math.abs(r.disp)))+'</span></div>';
+          var rtw=r.cur==="TWD",rps=rtw?"NT$":"$",rf=rtw?fmTW:fm;
+          h+='<div class="today-chip"><span class="today-chip-l"><span class="today-chip-sym">'+r.s+'</span>';
+          if(r.px!=null)h+='<span class="today-chip-px">'+rps+rf(r.px)+'</span>';
+          if(r.pct!=null)h+='<span class="today-chip-pct" style="color:'+col+'">('+(r.pct>=0?"+":"")+fm(r.pct)+'%)</span>';
+          h+='</span><span class="today-chip-val" style="color:'+col+'">'+H((r.disp>=0?"+":"-")+dfmK(Math.abs(r.disp)))+'</span></div>';
         }
         h+='</div>';
       }
