@@ -181,7 +181,7 @@ var S={
   chartRange:"1M",chartCustom:null,chartView:ld("pt_cv","mv"),
   hiddenSyms:ld("pt_hidden",[]),
   menu:false,
-  trF:{r:"all",s:"all"},clF:{r:"all",s:"all"},
+  trF:{r:"all",s:"all"},clF:{r:"all",mode:"all",syms:[],q:""},
   ytd:ld(ytdKey(),{}),  /* per-symbol YTD opening price */
   ytdLoading:false,
   ytdFailed:{}  /* per-symbol: true if last fetch attempt failed (transient, not persisted) */
@@ -414,7 +414,11 @@ function openLots(sym,excludeId,uptoDate){
       var ix=0;while(r>0&&ix<out.length){var k2=Math.min(r,out[ix].r);out[ix].r-=k2;r-=k2;if(out[ix].r<=0)out.splice(ix,1)}
     }}
   return out}
-function toggleLot(id){readF();if(!F.lots)F.lots=[];var ix=F.lots.indexOf(id);if(ix>=0)F.lots.splice(ix,1);else F.lots.push(id);var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml()}
+function toggleLot(id){readF();if(!F.lots)F.lots=[];var ix=F.lots.indexOf(id);if(ix>=0)F.lots.splice(ix,1);else F.lots.push(id);
+  var sym=String(F.symbol).toUpperCase(),ls=openLots(sym,F.id||null,F.date),tot=0;
+  for(var i=0;i<F.lots.length;i++){for(var j=0;j<ls.length;j++){if(ls[j].id===F.lots[i]){tot+=ls[j].r;break}}}
+  if(F.lots.length>0){F.qty=tot;var qEl=document.getElementById("f_q");if(qEl)qEl.value=tot}
+  updTot()}
 function buildLotsHtml(){
   if(F.action!=="sell"||!F.symbol)return"";
   var sym=String(F.symbol).toUpperCase();
@@ -466,6 +470,20 @@ function filterBar(key,fst,symList){
   for(var i=0;i<symList.length;i++)h+='<option value="'+symList[i]+'"'+(fst.s===symList[i]?" selected":"")+'>'+symList[i]+'</option>';
   h+='</select></div>';
   return h}
+
+function clSymListHtml(){
+  var pf2=calc(),syms={},i;
+  for(i=0;i<pf2.cl.length;i++){if(pf2.cl[i].s)syms[pf2.cl[i].s]=1}
+  var list=[];for(var k in syms)list.push(k);list.sort();
+  var q=(S.clF.q||"").toUpperCase(),h="";
+  for(i=0;i<list.length;i++){var s=list[i];if(q&&s.toUpperCase().indexOf(q)<0)continue;
+    var on=(S.clF.syms||[]).indexOf(s)>=0;
+    h+='<div onclick="toggleClSym(\''+s+'\')" style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-bottom:0.5px solid var(--border);cursor:pointer">';
+    h+='<div style="width:20px;height:20px;border-radius:6px;border:1.5px solid '+(on?"var(--up)":"var(--border2)")+';background:'+(on?"var(--up-soft)":"transparent")+';display:flex;align-items:center;justify-content:center;color:var(--up);font-size:12px;font-weight:800;flex-shrink:0">'+(on?"✓":"")+'</div>';
+    h+='<span style="font-weight:700;font-size:14px">'+s+'</span></div>'}
+  if(!h)h='<div style="color:var(--dim);font-size:12px;padding:16px;text-align:center">無符合的代號</div>';
+  return h}
+function toggleClSym(s){if(!S.clF.syms)S.clF.syms=[];var ix=S.clF.syms.indexOf(s);if(ix>=0)S.clF.syms.splice(ix,1);else S.clF.syms.push(s);S.clF.mode="syms";render()}
 
 function gasCode(){
   return "var SHEET_NAME = 'Data';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'ping') return jsonOut({ok:true, msg:'pong', version:'v6'});\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  if (action === 'ytd') return getYtd(e.parameter.sym, e.parameter.mkt, e.parameter.year);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n    sh.clear();\n    sh.getRange('A1').setValue(d.trades || '[]');\n    sh.getRange('B1').setValue(d.prices || '{}');\n    sh.getRange('C1').setValue(d.history || '[]');\n    return jsonOut({ok:true});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction readData() {\n  try {\n    var ss = SpreadsheetApp.getActiveSpreadsheet();\n    var sh = ss.getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:false,msg:'no sheet'});\n    var trades = sh.getRange('A1').getValue();\n    var prices = sh.getRange('B1').getValue();\n    var history = sh.getRange('C1').getValue();\n    return jsonOut({ok:true,trades:trades,prices:prices,history:history||'[]'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\n/* YTD baseline = previous year's LAST trading day CLOSE price.\n   v6: removed Stooq (was hanging GAS via UrlFetchApp). Now Yahoo first, TWSE backup.\n   Each branch wrapped in independent try-catch so one slow source can't kill the others. */\nfunction getYtd(sym, mkt, year) {\n  var y = parseInt(year) || (new Date()).getFullYear();\n  var prevY = y - 1;\n  var tried = [];\n\n  // ---------- 1. Yahoo Finance (works for both US and TW with .TW suffix) ----------\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var p1 = Math.floor(Date.UTC(prevY, 11, 20) / 1000);\n    var p2 = Math.floor(Date.UTC(y, 0, 5) / 1000);\n    var yurl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym)\n      + '?period1=' + p1 + '&period2=' + p2 + '&interval=1d';\n    var opts = {\n      muteHttpExceptions: true,\n      headers: {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}\n    };\n    var yresp = UrlFetchApp.fetch(yurl, opts);\n    var ycode = yresp.getResponseCode();\n    if (ycode === 200) {\n      var body = JSON.parse(yresp.getContentText());\n      var result = body && body.chart && body.chart.result && body.chart.result[0];\n      var ts = result && result.timestamp;\n      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];\n      var closes = quote && quote.close;\n      var cutoff = Math.floor(Date.UTC(y, 0, 1) / 1000);\n      var bestPrice = 0, bestTs = 0;\n      if (ts && closes) {\n        for (var i = 0; i < ts.length; i++) {\n          if (ts[i] < cutoff && closes[i] != null && closes[i] > 0) {\n            if (ts[i] > bestTs) { bestTs = ts[i]; bestPrice = closes[i]; }\n          }\n        }\n      }\n      if (bestPrice > 0) {\n        var dateStr = new Date(bestTs * 1000).toISOString().substring(0, 10);\n        return jsonOut({ok:true, price:bestPrice, source:'yahoo', baselineDate:dateStr, ticker:yhSym, tried:tried});\n      }\n      tried.push({src:'yahoo', reason:'no close before Jan 1'});\n    } else {\n      tried.push({src:'yahoo', reason:'http '+ycode});\n    }\n  } catch(err) { tried.push({src:'yahoo', reason:'err: '+err.message}); }\n\n  // ---------- 2. TWSE STOCK_DAY (TW only) ----------\n  if (mkt === 'tw') {\n    try {\n      var turl = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=' + prevY + '1201&stockNo=' + sym;\n      var tresp = UrlFetchApp.fetch(turl, {muteHttpExceptions:true});\n      var tcode = tresp.getResponseCode();\n      if (tcode === 200) {\n        var r = JSON.parse(tresp.getContentText());\n        if (r.stat === 'OK' && r.data && r.data.length) {\n          var lastRow = r.data[r.data.length - 1];\n          var closeP = parseFloat(String(lastRow[6]).replace(/,/g,''));\n          if (closeP > 0) return jsonOut({ok:true, price:closeP, source:'twse', baselineDate:String(lastRow[0]), ticker:sym, tried:tried});\n        }\n        tried.push({src:'twse', reason:'no data: '+(r.stat||'unknown')});\n      } else {\n        tried.push({src:'twse', reason:'http '+tcode});\n      }\n    } catch(err) { tried.push({src:'twse', reason:'err: '+err.message}); }\n  }\n\n  return jsonOut({ok:false, price:0, tried:tried});\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n";
@@ -927,16 +945,21 @@ function render(passive){try{
     if(!pf.cl.length){
       h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">🏁</div><div style="font-weight:700;font-size:20px;margin-bottom:8px;letter-spacing:-0.4px">尚無平倉紀錄</div><div style="color:var(--muted);font-size:13px">賣出持倉後就會出現在這裡</div></div>';
     } else {
-      if(!S.clF)S.clF={r:"all",s:"all"};
-      var csyms={};for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].s)csyms[pf.cl[i].s]=1}
-      var csymList=[];for(var ck in csyms)csymList.push(ck);csymList.sort();
-      var cFrom=filterFrom(S.clF.r);
-      var clArr=[];for(var i=0;i<pf.cl.length;i++){var c0=pf.cl[i];if(cFrom&&(!c0.date||c0.date<cFrom))continue;if(S.clF.s!=="all"&&c0.s!==S.clF.s)continue;clArr.push({c:c0,ix:i})}
+      if(!S.clF||!S.clF.mode)S.clF={r:(S.clF&&S.clF.r)||"all",mode:"all",syms:[],q:""};
+      var cFrom=filterFrom(S.clF.r),cfMode=S.clF.mode,cfSyms=S.clF.syms||[];
+      var clArr=[];for(var i=0;i<pf.cl.length;i++){var c0=pf.cl[i];if(cFrom&&(!c0.date||c0.date<cFrom))continue;if(cfMode==="win"&&c0.pnl<0)continue;if(cfMode==="lose"&&c0.pnl>=0)continue;if(cfMode==="syms"&&cfSyms.length&&cfSyms.indexOf(c0.s)<0)continue;clArr.push({c:c0,ix:i})}
       clArr.sort(function(a,b){return a.c.date<b.c.date?1:(a.c.date>b.c.date?-1:0)});
       var clRP=0,clCB=0;for(var i=0;i<clArr.length;i++){var c2=clArr[i].c;if(!isHidden(c2.s)){clRP+=toDisp(c2.pnl,c2.cur);clCB+=toDisp(c2.cb,c2.cur)}}
       var clPct=clCB>0?(clRP/clCB*100):0,clCol=clRP>=0?"var(--up)":"var(--down)";
       h+='<div class="section-label">CLOSED · 已平倉 ('+clArr.length+'/'+pf.cl.length+')</div>';
-      h+=filterBar('clF',S.clF,csymList);
+      var cLabel=cfMode==="win"?"已盈利個股":cfMode==="lose"?"已虧損個股":(cfMode==="syms"&&cfSyms.length)?(cfSyms.length===1?cfSyms[0]:cfSyms.length+" 檔個股"):"全部個股";
+      var cRanges=[["all","全部時間"],["today","今天"],["7d","過去7天"],["30d","過去30天"],["90d","過去90天"],["mtd","本月至今"],["ytd","年初至今"]];
+      h+='<div style="display:flex;gap:8px;margin-bottom:10px">';
+      h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.clF.r=this.value;render()">';
+      for(var ri2=0;ri2<cRanges.length;ri2++)h+='<option value="'+cRanges[ri2][0]+'"'+(S.clF.r===cRanges[ri2][0]?" selected":"")+'>'+cRanges[ri2][1]+'</option>';
+      h+='</select>';
+      h+='<button class="inp" style="flex:1;padding:9px 10px;font-size:13px;text-align:left;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="set({modal:{type:\'clfilter\'}})"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+cLabel+'</span><span style="color:var(--muted);margin-left:6px">▾</span></button>';
+      h+='</div>';
       h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
       if(!clArr.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
       for(var i=0;i<clArr.length;i++){var c=clArr[i].c,cIx=clArr[i].ix,cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=c.date||"",g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
@@ -963,6 +986,20 @@ function render(passive){try{
   h+='</div></div>';h+=nav(S.v);
   if(S.toast)h+='<div class="toast">'+S.toast+'</div>';
   if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:12px;font-size:15px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="S.tr=S.tr.filter(function(x){return x.id!==S.del.id});S.del=null;saveLocal();toast(\'已刪除\');render()">刪除</button></div></div></div>';
+  if(S.modal&&S.modal.type==="clfilter"){
+    var cfM=S.clF.mode;
+    h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:18px;max-width:380px;width:100%;background:var(--surface2);max-height:78vh;display:flex;flex-direction:column">';
+    h+='<div style="font-weight:700;font-size:15px;margin-bottom:12px">篩選個股</div>';
+    h+='<div style="display:flex;gap:6px;margin-bottom:10px">';
+    h+='<button class="tg '+(cfM==="all"?"on":"")+'" style="padding:8px;font-size:12px" onclick="S.clF.mode=\'all\';render()">全部</button>';
+    h+='<button class="tg '+(cfM==="win"?"on":"")+'" style="padding:8px;font-size:12px" onclick="S.clF.mode=\'win\';render()">已盈利</button>';
+    h+='<button class="tg '+(cfM==="lose"?"sell":"")+'" style="padding:8px;font-size:12px" onclick="S.clF.mode=\'lose\';render()">已虧損</button>';
+    h+='</div>';
+    h+='<input class="inp" placeholder="🔍 搜尋代號" value="'+esc(S.clF.q||"")+'" oninput="S.clF.q=this.value;var b=document.getElementById(\'clSymList\');if(b)b.innerHTML=clSymListHtml()" style="margin-bottom:10px;padding:10px 12px;font-size:14px">';
+    h+='<div id="clSymList" style="flex:1;overflow-y:auto;min-height:120px">'+clSymListHtml()+'</div>';
+    h+='<div style="display:flex;gap:8px;margin-top:12px"><button class="bs" onclick="S.clF.mode=\'all\';S.clF.syms=[];S.clF.q=\'\';set({modal:null})">清除</button><button class="bp" onclick="set({modal:null})">完成</button></div>';
+    h+='</div></div>';
+  }
   fin(h);
 }catch(e){document.getElementById("app").innerHTML='<div style="padding:40px;color:var(--down)"><b>Error:</b> '+e.message+'<br><br><small>'+(e.stack||"").replace(/\n/g,"<br>")+'</small></div>'}}
 
