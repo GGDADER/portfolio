@@ -250,7 +250,11 @@ function isHidden(sym){return S.hiddenSyms.indexOf(sym)>=0}
 function toggleHidePos(sym){var idx=S.hiddenSyms.indexOf(sym);if(idx>=0)S.hiddenSyms.splice(idx,1);else S.hiddenSyms.push(sym);sv("pt_hidden",S.hiddenSyms);render()}
 function setChartView(v){S.chartView=v;sv("pt_cv",v);render()}
 function sessName(s){return s==="pre"?"盤前":s==="post"?"盤後":s==="overnight"?"夜盤":s==="regular"?"盤中":""}
-function sessBadge(sym){var d=S.pr[sym];if(!d||!d.sess)return"";
+/* sess is a snapshot taken when the quote was fetched, so it only describes the market
+   right now if the quote itself is recent. Anything older than an hour is treated as
+   session-unknown rather than silently claiming the market is still open. */
+function liveSess(d){if(!d||!d.sess||d.sess==="closed")return"";if(!d.at||Date.now()-d.at>3600000)return"";return d.sess}
+function sessBadge(sym){var d=S.pr[sym];if(!d||!liveSess(d))return"";
   if(d.sess==="pre")return' <span class="badge" style="background:var(--blue-soft);color:var(--blue)">盤前</span>';
   if(d.sess==="post")return' <span class="badge" style="background:var(--purple-soft);color:var(--purple)">盤後</span>';
   if(d.sess==="overnight")return' <span class="badge" style="background:var(--amber-soft);color:var(--amber)">夜盤</span>';
@@ -267,7 +271,12 @@ function cloudLoad(){
       if(Array.isArray(ct)){
         var valid=[];
         for(var i=0;i<ct.length;i++){var t=ct[i];if(!t||!t.id)continue;if(!t.symbol||String(t.symbol).replace(/\s/g,"")==="")continue;if(!t.action)t.action="buy";if(!t.price&&t.price!==0)t.price=0;if(!t.qty&&t.qty!==0)t.qty=0;if(t.qty<=0)continue;if(!t.date)t.date="2025-01-01";if(!t.cur)t.cur=isTW(t.symbol)?"TWD":"USD";if(!t.type)t.type="stock";valid.push(t)}
-        S.tr=valid;for(var k in cp)S.pr[k]=cp[k];sv(TK,S.tr);sv(PK,S.pr);
+        S.tr=valid;
+        /* Trades are replaced wholesale (that is what "download" means), but prices merge
+           by recency: a backup uploaded hours ago must not overwrite a quote this device
+           fetched minutes ago. */
+        for(var k in cp){var loc=S.pr[k],rem=cp[k];if(!rem)continue;if(!loc||!loc.at||!rem.at||rem.at>loc.at)S.pr[k]=rem}
+        sv(TK,S.tr);sv(PK,S.pr);
         if(d.history){try{var ch=JSON.parse(d.history);if(Array.isArray(ch)&&ch.length)sv(HK,ch)}catch(e){}}
       }
       S.synced=true;toast("已從雲端下載 ✓")}catch(e){toast("雲端資料解析失敗")}}else toast("雲端無資料")
@@ -744,7 +753,8 @@ function render(passive){try{
     var prData=S.pr[S.det],pcv=prData&&prData.pc?prData.pc:null;
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     var dayChg=p&&pcv?(p-pcv):null,dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null,dcCol=dayChg!=null?(dayChg>=0?"var(--up)":"var(--down)"):"var(--muted)";
-    var sN=(prData&&prData.sess&&prData.sess!=="regular")?sessName(prData.sess):"";
+    var prSess=liveSess(prData);
+    var sN=(prSess&&prSess!=="regular")?sessName(prSess):"";
     h+=sr("每股價格"+(sN?"（"+sN+"）":""),H(p?ps+f(p):"未設定"),"#fff");
     if(prData&&prData.rp&&sN&&p){var exd=p-prData.rp,exc=exd>=0?"var(--up)":"var(--down)";
       h+=sr("盤中收盤",H(ps+f(prData.rp)),"var(--muted)");
@@ -850,7 +860,7 @@ function render(passive){try{
   }
   h+='<div class="pst">';
   if(S.lastUp)h+='<span class="dot"></span>'+(S.pLoading?"更新中...":"更新於 "+timeAgo(S.lastUp));
-  var curSess="";for(var sk in S.pr){var sv2=S.pr[sk];if(sv2&&sv2.sess&&sv2.sess!=="closed"){curSess=sv2.sess;break}}
+  var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!sv2||!sv2.at)continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
   if(curSess){var scol=curSess==="regular"?"var(--up)":curSess==="pre"?"var(--blue)":curSess==="post"?"var(--purple)":"var(--amber)";
     h+=' · <span style="color:'+scol+';font-weight:700">'+sessName(curSess)+'</span>'}
   if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
