@@ -176,6 +176,7 @@ function fm(n){return n!=null&&!isNaN(n)?Number(n).toLocaleString("en-US",{minim
 function fmTW(n){return n!=null&&!isNaN(n)?Math.round(n).toLocaleString():"—"}
 function fmK(n){if(n==null||isNaN(n))return"—";var a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+"M";if(a>=1e4)return(n/1e3).toFixed(1)+"K";if(a>=1e3)return(n/1e3).toFixed(2)+"K";return Math.round(n).toLocaleString()}
 function isTW(s){return/^\d{4,6}$/.test(s)}
+function fmQ(n){if(n==null||isNaN(n))return"—";return(Math.round(n*10000)/10000).toString()}
 function dtKey(t){return(t.date||"")+" "+(t.tm||"00:00")}
 function dtLabel(t){return(t.date||"")+(t.tm?" "+t.tm:"")}
 function nowHM(){var d=new Date();return("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}
@@ -818,20 +819,36 @@ function render(passive){try{
     }
     if(pAt)h+=sr("更新時間",new Date(pAt).toLocaleString("zh-TW"),"#fff");
     h+='</div><div class="section-label">交易紀錄（點擊編輯）</div>';
-    var mulD=tw?1000:1,tp={},lots=[];
+    /* Replay matching while keeping every buy lot's record, so each buy row can report
+       its真 state: untouched / partially closed / fully closed. Selected lots consume first,
+       then FIFO over whatever is left, mirroring calc(). */
+    var mulD=tw?1000:1,tp={},rec={},lq=[];
     for(var i=0;i<st.length;i++){var t=st[i];
-      if(t.action==="buy"){lots.push({id:t.id,p:t.price,r:t.qty});tp[t.id]=(p!=null)?{v:(p-t.price)*t.qty*mulD,pct:t.price>0?((p-t.price)/t.price*100):null,rz:false}:null}
-      else{var rq=t.qty,cb2=0;
-        if(t.lots&&t.lots.length){for(var li=0;li<t.lots.length&&rq>0;li++){for(var bi=0;bi<lots.length;bi++){if(lots[bi].id===t.lots[li]&&lots[bi].r>0){var kk=Math.min(rq,lots[bi].r);cb2+=kk*lots[bi].p;rq-=kk;lots[bi].r-=kk;break}}}
-          var nl=[];for(var bi2=0;bi2<lots.length;bi2++){if(lots[bi2].r>0)nl.push(lots[bi2])}lots=nl}
-        while(rq>0&&lots.length){var b2=lots[0],k2=Math.min(rq,b2.r);cb2+=k2*b2.p;rq-=k2;b2.r-=k2;if(b2.r<=0)lots.shift()}
+      if(t.action==="buy"){rec[t.id]={qty:t.qty,rem:t.qty,px:t.price,rz:0};lq.push(t.id)}
+      else{var rq=t.qty,cb2=0,R;
+        if(t.lots&&t.lots.length){for(var li=0;li<t.lots.length&&rq>0;li++){R=rec[t.lots[li]];if(!R||R.rem<=0)continue;
+          var kk=Math.min(rq,R.rem);cb2+=kk*R.px;R.rem-=kk;R.rz+=(t.price-R.px)*kk*mulD;rq-=kk}}
+        for(var qi=0;qi<lq.length&&rq>0;qi++){R=rec[lq[qi]];if(!R||R.rem<=0)continue;
+          var k2=Math.min(rq,R.rem);cb2+=k2*R.px;R.rem-=k2;R.rz+=(t.price-R.px)*k2*mulD;rq-=k2}
         cb2*=mulD;var spnl=t.price*t.qty*mulD-cb2;tp[t.id]={v:spnl,pct:cb2>0?(spnl/cb2*100):null,rz:true}}}
-    for(var i=0;i<st.length;i++){var t=st[i],ti=tp[t.id],tiCol=ti?(ti.v>=0?"var(--up)":"var(--down)"):"var(--muted)";
-      h+='<div class="card" style="display:flex;align-items:center;gap:6px;padding:11px 14px;border-radius:14px">';
+    for(var i=0;i<st.length;i++){var t=st[i];if(t.action!=="buy")continue;var R2=rec[t.id];
+      if(R2.rem<=0){tp[t.id]={closed:true,rzv:R2.rz}}
+      else if(p!=null){tp[t.id]={v:(p-R2.px)*R2.rem*mulD,pct:R2.px>0?((p-R2.px)/R2.px*100):null,part:R2.rem<R2.qty,rem:R2.rem,cq:R2.qty-R2.rem,rzv:R2.rz}}
+      else tp[t.id]=(R2.rem<R2.qty)?{part:true,rem:R2.rem,cq:R2.qty-R2.rem,rzv:R2.rz}:null}
+    for(var i=0;i<st.length;i++){var t=st[i],ti=tp[t.id];
+      var hasV=ti&&ti.v!=null,tiCol=hasV?(ti.v>=0?"var(--up)":"var(--down)"):"var(--muted)";
+      var isClosed=ti&&ti.closed;
+      h+='<div class="card" style="display:flex;align-items:center;gap:6px;padding:11px 14px;border-radius:14px'+(isClosed?";opacity:.45":"")+'">';
       h+='<div style="flex:1;cursor:pointer;min-width:0" onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}">';
       h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span><span style="font-weight:700;font-size:13px">@'+ps+f(t.price)+'</span><span style="font-size:11px;color:var(--muted)">x'+H(t.qty+un)+'</span></div>';
-      h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+dtLabel(t)+'</div></div>';
-      h+='<div style="text-align:right;flex-shrink:0">'+(ti?'<div style="font-weight:700;font-size:13px;color:'+tiCol+'">'+H((ti.v>=0?"+":"-")+ps+f(Math.abs(ti.v)))+'</div><div style="font-size:10px;color:'+tiCol+'">'+(ti.rz?"已實現 ":"")+H(ti.pct!=null?((ti.pct>=0?"+":"")+fm(ti.pct)+"%"):"—")+'</div>':'<div style="font-size:11px;color:var(--dim)">—</div>')+'</div>';
+      h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+dtLabel(t);
+      if(ti&&ti.part)h+=' · <span style="color:var(--amber)">已平 '+H(fmQ(ti.cq))+' · 剩 '+H(fmQ(ti.rem))+' '+un+'</span>';
+      h+='</div></div>';
+      h+='<div style="text-align:right;flex-shrink:0">';
+      if(isClosed)h+='<div style="font-size:12px;font-weight:700;color:var(--muted)">已平倉</div><div style="font-size:10px;color:var(--dim)">見下方賣出</div>';
+      else if(hasV)h+='<div style="font-weight:700;font-size:13px;color:'+tiCol+'">'+H((ti.v>=0?"+":"-")+ps+f(Math.abs(ti.v)))+'</div><div style="font-size:10px;color:'+tiCol+'">'+(ti.rz?"已實現 ":"未實現 ")+H(ti.pct!=null?((ti.pct>=0?"+":"")+fm(ti.pct)+"%"):"—")+'</div>';
+      else h+='<div style="font-size:11px;color:var(--dim)">—</div>';
+      h+='</div>';
       h+='<button onclick="event.stopPropagation();set({modal:{type:\'deltrade\',id:\''+t.id+'\',sym:\''+t.symbol+'\',desc:\''+(t.action==="buy"?"買入":"賣出")+' '+t.qty+un+' @'+ps+f(t.price)+'\'}})" style="background:0;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:4px">🗑</button></div>'}
     h+='<div style="margin-top:20px;display:flex;flex-direction:column;gap:8px"><button onclick="toggleHidePos(\''+S.det+'\');set({v:\'home\',det:null})" style="padding:12px;border-radius:14px;border:1px solid var(--border2);background:0;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;width:100%">'+(isHidden(S.det)?"👁 取消隱藏":"👁‍🗨 隱藏（不計入總覽）")+'</button><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除持倉</button></div></div></div>';
     if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">要隱藏還是刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.5">💡 建議使用<span style="color:var(--up)">隱藏</span>：不計入總覽但保留資料，可隨時恢復<br><span style="color:var(--down)">刪除</span>：永久移除所有交易紀錄，會影響資產曲線</div><div style="display:flex;flex-direction:column;gap:8px"><button class="bp" style="width:100%" onclick="toggleHidePos(\''+S.modal.sym+'\');S.modal=null;S.det=null;S.v=\'home\';saveLocal();toast(\'已隱藏 '+S.modal.sym+'\');render()">👁‍🗨 隱藏（推薦）</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">🗑 永久刪除</button><button class="bs" style="width:100%" onclick="set({modal:null})">取消</button></div></div></div>';
