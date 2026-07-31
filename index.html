@@ -172,21 +172,39 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v8.0";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v8.1";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v10";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
-/* 手續費快捷鍵。r = 費率(%)，會套用到「費率」欄位。可自由增刪。 */
+/* 手續費快捷鍵。可自由增刪。
+     n   顯示名稱
+     r   費率(%)
+     cur 只在此市場顯示（"USD"/"TWD"），省略=都顯示
+     act 只在此動作顯示（"buy"/"sell"），省略=都顯示
+
+   費率來源與注意事項：
+   - IBKR 按「每股」收費（Tiered $0.0035/股 + 交易所規費，低消 $0.35），不是按百分比。
+     0.0035% 是用你 2026-07-30 的實際成交反推的（NVDA 0.0035%、GOOG 0.0032%），
+     只在「高價股 + 大單」時準確。低價股或小單的實際百分比會高很多，
+     例如 $20 的股票約 0.033%、遇到 $0.35 低消時更高 —— 這種時候直接改「金額」欄比較準。
+   - 台股手續費法定上限 0.1425%，買賣各收一次，多數券商有折扣（常見 5~6 折，低至 2.8 折），
+     且多有 20 元低消。若你的券商是 6 折，就把 0.1425 改成 0.0855、0.4425 改成 0.3855。
+   - 台股證交稅只有「賣出」才收，一般股票 0.3%，故賣出 = 0.1425% + 0.3% = 0.4425%。
+     ETF 證交稅只有 0.1%（賣出合計 0.2425%）；現股當沖 0.15%（賣出合計 0.2925%，優惠至 2027 年底）。 */
 var FEE_PRESETS=[
-  {n:"0%",r:0},
-  {n:"IBKR 0.05%",r:0.05},
-  {n:"台股買 0.1425%",r:0.1425},
-  {n:"台股賣 0.4425%",r:0.4425},
-  {n:"複委託 0.5%",r:0.5},
-  {n:"複委託 1%",r:1}
+  {n:"0%",            r:0},
+  {n:"IBKR 0.0035%",  r:0.0035, cur:"USD"},
+  {n:"複委託 0.08%",   r:0.08,   cur:"USD"},
+  {n:"台股買 0.1425%", r:0.1425, cur:"TWD", act:"buy"},
+  {n:"台股賣 0.4425%", r:0.4425, cur:"TWD", act:"sell"}
 ];
 
 /* ============================================================
    CHANGELOG
+   v8.1  手續費快捷鍵修正
+         - IBKR 0.05% 是錯的（高估約 14 倍），依實際對帳單改為 0.0035%
+         - 美股複委託統一成單一 0.08%（移除舊的 0.5% / 1%）
+         - 台股費率查證：買 0.1425%、賣 0.4425%（0.1425% + 證交稅 0.3%）確認正確
+         - 快捷鍵改為依「市場 + 買賣方向」過濾，避免把賣出稅率套到買入
    v8.0  交易新增「資金來源（現金/融資）」與「手續費」
          - 融資買入：市值與融資餘額同額增加 => 總資產(淨值)不跳動，只有淨損益會動
          - 手續費：買入計入成本、賣出扣減收入，預設 0%
@@ -1030,9 +1048,14 @@ function render(passive){try{
     h+='<div style="flex:1"><input class="inp" id="f_fr" type="number" step="any" inputmode="decimal" value="'+((+F.fr)?F.fr:"")+'" oninput="onFeeRate()" placeholder="費率 %"></div>';
     h+='<div style="flex:1"><input class="inp" id="f_fe" type="number" step="any" inputmode="decimal" value="'+(fee0?(Math.round(fee0*10000)/10000):"")+'" oninput="onFeeAmt()" placeholder="金額 '+ps+'"></div>';
     h+='</div>';
-    h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
-    for(var fpi=0;fpi<FEE_PRESETS.length;fpi++)h+='<button class="fchip" onclick="setFeeRate('+FEE_PRESETS[fpi].r+')">'+FEE_PRESETS[fpi].n+'</button>';
-    h+='</div>';
+    /* Only show presets that apply to this market AND this action, so a 賣出-only rate
+       like 台股賣 0.4425%（含證交稅）can never be tapped onto a 買入 by mistake. */
+    var chips="";
+    for(var fpi=0;fpi<FEE_PRESETS.length;fpi++){var FP=FEE_PRESETS[fpi];
+      if(FP.cur&&FP.cur!==F.cur)continue;
+      if(FP.act&&FP.act!==F.action)continue;
+      chips+='<button class="fchip" onclick="setFeeRate('+FP.r+')">'+FP.n+'</button>'}
+    if(chips)h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'+chips+'</div>';
     h+='<div style="font-size:10px;color:var(--dim);margin-bottom:14px;line-height:1.5">費率為主：改費率會重算金額；直接改金額（例如低消）會反推費率。費率會記成此市場的預設值。</div>';
     /* --- 金額小計 --- */
     h+='<div style="background:var(--surface2);border-radius:12px;padding:10px 14px;margin-bottom:14px">';
