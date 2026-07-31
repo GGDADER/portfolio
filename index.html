@@ -49,6 +49,10 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .tg.on{background:var(--up-soft);color:var(--up);border-color:var(--up)}
 .tg.sell{background:var(--down-soft);color:var(--down);border-color:var(--down)}
 .tg.tw{background:var(--amber-soft);color:var(--amber);border-color:var(--amber)}
+.tg.mgn{background:var(--purple-soft);color:var(--purple);border-color:var(--purple)}
+.mgn-bg{background:var(--purple-soft);color:var(--purple)}
+.fchip{padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:0;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap}
+.fchip:active{background:var(--surface2)}
 .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;letter-spacing:0.3px}
 .buy-bg{background:var(--up-soft);color:var(--up)}
 .sell-bg{background:var(--down-soft);color:var(--down)}
@@ -165,9 +169,41 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
      header reads "current index - 100" directly.
    ============================================================ */
 
+/* ============================================================
+   ===============  設定區（要改參數改這裡）  ==================
+   ============================================================ */
+var APP_VER="v8.0";        /* 本檔版本，改動時請一併更新 */
+var GAS_VER="v10";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
+
+/* 手續費快捷鍵。r = 費率(%)，會套用到「費率」欄位。可自由增刪。 */
+var FEE_PRESETS=[
+  {n:"0%",r:0},
+  {n:"IBKR 0.05%",r:0.05},
+  {n:"台股買 0.1425%",r:0.1425},
+  {n:"台股賣 0.4425%",r:0.4425},
+  {n:"複委託 0.5%",r:0.5},
+  {n:"複委託 1%",r:1}
+];
+
+/* ============================================================
+   CHANGELOG
+   v8.0  交易新增「資金來源（現金/融資）」與「手續費」
+         - 融資買入：市值與融資餘額同額增加 => 總資產(淨值)不跳動，只有淨損益會動
+         - 手續費：買入計入成本、賣出扣減收入，預設 0%
+         - 總資產 = 持倉市值 − 融資餘額（無融資時與舊版完全相同）
+         - 快照新增 db_u / db_t；舊快照無此欄位，一律視為 0
+   v7    報價新鮮度修正（parseChart 改讀 meta、自適應輪詢、回前景刷新、失敗狀態）
+   ============================================================ */
+
 var FK=ld("pt_fk",""),GS=ld("pt_gs","");
 var TK="pt_t9",PK="pt_p9",CK="pt_cur",HK="pt_hist9";
 function ytdKey(){return"pt_ytd_"+(new Date().getFullYear())}
+/* Last fee rate used per market, so 複委託 users don't retype 0.5% on every trade.
+   Funding type is deliberately NOT remembered: a stale "margin" flag would silently
+   distort the equity curve, so每筆都必須自己選，預設現金。 */
+function feeDefs(){return ld("pt_feed",{USD:0,TWD:0})}
+function defFee(cur){var d=feeDefs(),v=+d[cur];return(isFinite(v)&&v>0)?v:0}
+function saveDefFee(cur,r){var d=feeDefs();d[cur]=(+r||0);sv("pt_feed",d)}
 
 function ld(k,f){try{return JSON.parse(localStorage.getItem(k))||f}catch(e){return f}}
 function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
@@ -286,21 +322,44 @@ function cloudLoad(){
 }
 function saveLocal(){sv(TK,S.tr);sv(PK,S.pr)}
 
+function trGross(t){var mul=(t.cur==="TWD")?1000:1;return(+t.price||0)*(+t.qty||0)*mul}
+/* Fee is stored as an absolute amount (`fee`) with the rate (`fr`) kept alongside for
+   display and recomputation. Absent on every pre-v8 trade, which therefore reads as 0. */
+function trFee(t){
+  if(!t)return 0;
+  var f=+t.fee;if(!isNaN(f)&&f>0)return f;
+  var r=+t.fr;if(!isNaN(r)&&r>0)return trGross(t)*r/100;
+  return 0;
+}
+function isMargin(t){return!!(t&&t.action==="buy"&&t.fd==="margin")}
+
 function calc(){
   var p={},cl=[];
   var sorted=S.tr.slice().sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);return ka<kb?-1:(ka>kb?1:0)});
   for(var i=0;i<sorted.length;i++){var t=sorted[i];if(!t.symbol)continue;
-    var tw=t.cur==="TWD",mul=tw?1000:1;
+    var tw=t.cur==="TWD",mul=tw?1000:1,gross=t.price*t.qty*mul,fee=trFee(t);
     if(!p[t.symbol])p[t.symbol]={s:t.symbol,tp:t.type,cur:t.cur||"USD",q:0,c:0,bs:[]};var P=p[t.symbol];
-    var cost=t.price*t.qty*mul;
-    if(t.action==="buy"){P.q+=t.qty;P.c+=cost;P.bs.push({id:t.id,p:t.price*mul,r:t.qty,op:t.price,d:dtLabel(t)})}
+    if(t.action==="buy"){
+      /* Fees are capitalised into the basis on a buy and netted off proceeds on a sell.
+         `p` therefore carries the fee-loaded unit cost while `op` keeps the raw price for
+         display, so every existing pnl formula keeps working untouched. `m` is the
+         borrowed principal per unit — zero unless this lot was bought on margin. */
+      var cost=gross+fee,unit=t.qty>0?cost/t.qty:0;
+      P.q+=t.qty;P.c+=cost;
+      P.bs.push({id:t.id,p:unit,r:t.qty,op:t.price,d:dtLabel(t),m:isMargin(t)?unit:0})}
     else{var r=t.qty,cb=0,matches=[];
       if(t.lots&&t.lots.length){
         for(var li=0;li<t.lots.length&&r>0;li++){var b=null;for(var bi=0;bi<P.bs.length;bi++){if(P.bs[bi].id===t.lots[li]&&P.bs[bi].r>0){b=P.bs[bi];break}}if(!b)continue;var k=Math.min(r,b.r);cb+=k*b.p;matches.push({buyPrice:b.op,qty:k,cost:k*b.p,date:b.d});r-=k;b.r-=k}
         var nbs=[];for(var bi2=0;bi2<P.bs.length;bi2++){if(P.bs[bi2].r>0)nbs.push(P.bs[bi2])}P.bs=nbs}
       while(r>0&&P.bs.length){var b2=P.bs[0],k2=Math.min(r,b2.r);cb+=k2*b2.p;matches.push({buyPrice:b2.op,qty:k2,cost:k2*b2.p,date:b2.d});r-=k2;b2.r-=k2;if(b2.r<=0)P.bs.shift()}
-      P.q-=t.qty;P.c-=cb;cl.push({s:t.symbol,cur:t.cur||"USD",pnl:t.price*t.qty*mul-cb,qty:t.qty,price:t.price,date:t.date||"",tm:t.tm||"",cb:cb,matches:matches})}}
-  var op=[];for(var k in p){if(p[k].q>0)op.push({s:p[k].s,tp:p[k].tp,cur:p[k].cur,q:p[k].q,avg:p[k].c/p[k].q,c:p[k].c})}
+      P.q-=t.qty;P.c-=cb;
+      cl.push({s:t.symbol,cur:t.cur||"USD",pnl:gross-fee-cb,qty:t.qty,price:t.price,date:t.date||"",tm:t.tm||"",cb:cb,fee:fee,matches:matches})}}
+  var op=[];
+  for(var k in p){if(p[k].q>0){
+    /* Margin debt is DERIVED from the lots still open, never accumulated as trades are
+       replayed, so a lot-specified or partial sell can't leave the balance drifting. */
+    var P2=p[k],db=0;for(var bi3=0;bi3<P2.bs.length;bi3++)db+=P2.bs[bi3].r*P2.bs[bi3].m;
+    op.push({s:P2.s,tp:P2.tp,cur:P2.cur,q:P2.q,avg:P2.c/P2.q,c:P2.c,db:db})}}
   return{op:op,cl:cl};
 }
 
@@ -414,11 +473,16 @@ function snapHistory(){
   var hist=ld(HK,[]);
   var sorted=S.tr.slice().sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);return ka<kb?-1:(ka>kb?1:0)});
   var today=new Date().toISOString().slice(0,10);
-  var pf=calc(),mvU=0,mvT=0;
-  for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;if(tw)mvT+=mv;else mvU+=mv}
+  var pf=calc(),mvU=0,mvT=0,dbU=0,dbT=0;
+  for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;
+    if(tw){mvT+=mv;dbT+=(x.db||0)}else{mvU+=mv;dbU+=(x.db||0)}}
   var ciU=0,ciT=0;
-  for(var i=0;i<sorted.length;i++){var t=sorted[i];if(t.date>today)break;if(isHidden(t.symbol))continue;var tw=t.cur==="TWD",mul=tw?1000:1,sign=t.action==="buy"?1:-1;var cost=t.price*t.qty*mul*sign;if(tw)ciT+=cost;else ciU+=cost}
-  var rate=S.rate||32.5,entry={d:today,u:mvU,t:mvT,r:rate,ci_u:ciU,ci_t:ciT,ci:ciU+ciT/rate};
+  for(var i=0;i<sorted.length;i++){var t=sorted[i];if(t.date>today)break;if(isHidden(t.symbol))continue;
+    var tw=t.cur==="TWD",mul=tw?1000:1,g=t.price*t.qty*mul,fe=trFee(t);
+    /* Cash actually moved: a buy costs gross+fee, a sell returns gross-fee. */
+    var flow=t.action==="buy"?(g+fe):-(g-fe);
+    if(tw)ciT+=flow;else ciU+=flow}
+  var rate=S.rate||32.5,entry={d:today,u:mvU,t:mvT,r:rate,ci_u:ciU,ci_t:ciT,ci:ciU+ciT/rate,db_u:dbU,db_t:dbT};
   var found=false;for(var i=0;i<hist.length;i++){if(hist[i].d===today){hist[i]=entry;found=true;break}}
   if(!found)hist.push(entry);
   if(hist.length>365)hist=hist.slice(hist.length-365);
@@ -429,18 +493,21 @@ function buildChartSeries(hist){
   if(!hist||!hist.length)return[];
   var Hs=hist.slice().sort(function(a,b){return a.d<b.d?-1:1}),out=[];
   for(var i=0;i<Hs.length;i++){
-    var h=Hs[i],r=h.r||S.rate||32.5,mv,ci;
-    if(S.cur==="TWD"){mv=(h.u||0)*r+(h.t||0);ci=(h.ci_u||0)*r+(h.ci_t||0)}
-    else{mv=(h.u||0)+(h.t||0)/r;ci=(h.ci_u||0)+(h.ci_t||0)/r}
-    out.push({d:h.d,mv:mv,ci:ci,pnl:mv-ci})
+    var h=Hs[i],r=h.r||S.rate||32.5,mv,ci,db;
+    if(S.cur==="TWD"){mv=(h.u||0)*r+(h.t||0);ci=(h.ci_u||0)*r+(h.ci_t||0);db=(h.db_u||0)*r+(h.db_t||0)}
+    else{mv=(h.u||0)+(h.t||0)/r;ci=(h.ci_u||0)+(h.ci_t||0)/r;db=(h.db_u||0)+(h.db_t||0)/r}
+    /* eq = 淨值 = 市值 - 融資餘額. Snapshots written before v8 carry no db_* fields and
+       so default to 0, meaning every historical point keeps its original value exactly.
+       net = the cash you actually put in (basis minus what was borrowed). */
+    out.push({d:h.d,mv:mv,db:db,eq:mv-db,ci:ci,net:ci-db,pnl:mv-ci})
   }
   var idx=100;out[0].twr=100;
   for(var i=1;i<out.length;i++){
-    var prevMV=out[i-1].mv,flow=out[i].ci-out[i-1].ci;
-    if(prevMV<=0){idx=100;out[i].twr=100;continue}
-    var r=(out[i].mv-flow)/prevMV;
-    if(!isFinite(r)||r<=0){out[i].twr=idx;continue}
-    idx=idx*r;out[i].twr=idx;
+    var prevEq=out[i-1].eq,flow=out[i].net-out[i-1].net;
+    if(prevEq<=0){idx=100;out[i].twr=100;continue}
+    var r2=(out[i].eq-flow)/prevEq;
+    if(!isFinite(r2)||r2<=0){out[i].twr=idx;continue}
+    idx=idx*r2;out[i].twr=idx;
   }
   return out;
 }
@@ -450,8 +517,10 @@ function getChartData(range,cf,ct){
   var series=buildChartSeries(hist),view=S.chartView||"mv",picked=[];
   for(var i=0;i<series.length;i++){
     var s=series[i],v;
-    if(view==="mv")v=s.mv;else if(view==="pnl")v=s.pnl;else v=s.twr-100;
-    picked.push({d:s.d,v:v,mv:s.mv,pnl:s.pnl,twr:s.twr,ci:s.ci})
+    /* "mv" tab now plots EQUITY (市值 − 融資餘額). With no margin anywhere, eq === mv,
+       so every existing chart is pixel-identical to before. */
+    if(view==="mv")v=s.eq;else if(view==="pnl")v=s.pnl;else v=s.twr-100;
+    picked.push({d:s.d,v:v,mv:s.mv,eq:s.eq,db:s.db,pnl:s.pnl,twr:s.twr,ci:s.ci})
   }
   var now=new Date(),from;
   if(range==="custom"&&cf){from=new Date(cf);var to=ct?new Date(ct):now;return picked.filter(function(h){var d=new Date(h.d);return d>=from&&d<=to})}
@@ -465,13 +534,56 @@ function getChartData(range,cf,ct){
   return picked.filter(function(h){return new Date(h.d)>=from})
 }
 
-var F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),cur:"USD",lots:[]};
-function initF(t){if(t){F={type:t.type||"stock",symbol:t.symbol||"",action:t.action||"buy",price:t.price||"",qty:t.qty||"",date:t.date||new Date().toISOString().slice(0,10),tm:t.tm||"",cur:t.cur||"USD",id:t.id,lots:(t.lots&&t.lots.slice)?t.lots.slice():[]}}else F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),tm:nowHM(),cur:"USD",lots:[]}}
-function readF(){var map={f_s:"symbol",f_p:"price",f_q:"qty",f_d:"date",f_t:"tm"},ids=["f_s","f_p","f_q","f_d","f_t"];for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)F[map[ids[i]]]=ids[i]==="f_s"?el.value.toUpperCase():el.value}}
-function updTot(){readF();F.cur=isTW(F.symbol)?"TWD":"USD";var el=document.getElementById("ftot"),ps=F.cur==="TWD"?"NT$":"$",tw=F.cur==="TWD";var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);if(el)el.textContent=ps+(tw?fmTW(tot):fm(tot));var btn=document.getElementById("sbtn");if(btn)btn.disabled=!(F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0);var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml()}
+var F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),cur:"USD",lots:[],fd:"cash",fr:0,fee:0};
+function initF(t){
+  if(t){F={type:t.type||"stock",symbol:t.symbol||"",action:t.action||"buy",price:t.price||"",qty:t.qty||"",date:t.date||new Date().toISOString().slice(0,10),tm:t.tm||"",cur:t.cur||"USD",id:t.id,lots:(t.lots&&t.lots.slice)?t.lots.slice():[],
+    fd:(t.fd==="margin")?"margin":"cash",fr:(t.fr!=null?t.fr:0),fee:(t.fee!=null?t.fee:0),_frT:true}}
+  else{var c0="USD";F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:new Date().toISOString().slice(0,10),tm:nowHM(),cur:c0,lots:[],fd:"cash",fr:defFee(c0),fee:0,_frT:false}}}
+function readF(){var map={f_s:"symbol",f_p:"price",f_q:"qty",f_d:"date",f_t:"tm",f_fr:"fr",f_fe:"fee"},ids=["f_s","f_p","f_q","f_d","f_t","f_fr","f_fe"];for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)F[map[ids[i]]]=ids[i]==="f_s"?el.value.toUpperCase():el.value}}
+/* Fee model: the RATE is the source of truth. Typing an amount back-solves the rate, so
+   the two boxes always agree and a later qty change re-derives the amount predictably. */
+function fGross(){var tw=F.cur==="TWD";return(+F.price||0)*(+F.qty||0)*(tw?1000:1)}
+function fFee(){var v=+F.fee;return(isFinite(v)&&v>0)?v:0}
+function syncDefFee(){if(S.ed||F._frT)return;var d=defFee(F.cur);if((+F.fr||0)!==d){F.fr=d;var e=document.getElementById("f_fr");if(e)e.value=d?d:""}}
+function paintTotals(){
+  var tw=F.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+  var g=fGross(),fe=fFee(),net=(F.action==="buy")?(g+fe):(g-fe);
+  var e1=document.getElementById("ftot");if(e1)e1.textContent=ps+f(g);
+  var e2=document.getElementById("ffee");if(e2)e2.textContent=(fe>0?"-":"")+ps+f(fe);
+  var e3=document.getElementById("fnet");if(e3)e3.textContent=ps+f(net);
+  var e4=document.getElementById("fnetl");if(e4)e4.textContent=(F.action==="buy")?"實付總額":"實收淨額";
+}
+function updTot(){
+  readF();F.cur=isTW(F.symbol)?"TWD":"USD";syncDefFee();
+  var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
+  var fe=document.getElementById("f_fe");if(fe)fe.value=F.fee?(Math.round(F.fee*10000)/10000):"";
+  paintTotals();
+  var btn=document.getElementById("sbtn");if(btn)btn.disabled=!(F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0);
+  var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml();
+}
+function onFeeRate(){readF();F._frT=true;var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
+  var fe=document.getElementById("f_fe");if(fe)fe.value=F.fee?(Math.round(F.fee*10000)/10000):"";
+  paintTotals();var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml()}
+function onFeeAmt(){readF();F._frT=true;var g=fGross(),a=fFee();F.fr=(g>0)?(a/g*100):0;
+  var fr=document.getElementById("f_fr");if(fr)fr.value=F.fr?(Math.round(F.fr*10000)/10000):"";
+  paintTotals();var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml()}
+function setFeeRate(r){readF();F._frT=true;F.fr=r;var e=document.getElementById("f_fr");if(e)e.value=r?r:"";onFeeRate()}
+function setFFd(v){readF();F.fd=v;render()}
 function setFAct(v){readF();F.action=v;render()}
-function setFCur(v){readF();F.cur=v;render()}
-function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;var sym=F.symbol.toUpperCase(),cur=isTW(sym)?"TWD":"USD",t={id:F.id||uid(),type:F.type,symbol:sym,action:F.action,price:+F.price,qty:+F.qty,date:F.date,tm:F.tm||"",cur:cur};if(F.action==="sell"&&F.lots&&F.lots.length)t.lots=F.lots.slice();if(S.ed){var ntr=[];for(var i=0;i<S.tr.length;i++)ntr.push(S.tr[i].id===t.id?t:S.tr[i]);S.tr=ntr}else S.tr.push(t);S.ed=null;S.v="trades";saveLocal();toast("已儲存 ✓");render();setTimeout(function(){fetchPrices(true)},500)}
+function setFCur(v){readF();F.cur=v;if(!S.ed&&!F._frT)F.fr=defFee(v);render()}
+function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;
+  var sym=F.symbol.toUpperCase(),cur=isTW(sym)?"TWD":"USD";
+  var t={id:F.id||uid(),type:F.type,symbol:sym,action:F.action,price:+F.price,qty:+F.qty,date:F.date,tm:F.tm||"",cur:cur};
+  /* fr/fee/fd are written ONLY when meaningful. A zero-fee cash trade therefore serialises
+     byte-identically to a pre-v8 trade, which keeps the cloud-sync payload small (the whole
+     book lives in one Google Sheets cell) and guarantees no behaviour change for old data. */
+  var fr=+F.fr||0;if(fr<0)fr=0;
+  var fee=+F.fee||0;if(fee<0)fee=0;
+  if(fr>0)t.fr=fr;
+  if(fee>0)t.fee=fee;
+  if(F.action==="buy"&&F.fd==="margin")t.fd="margin";
+  saveDefFee(cur,fr);
+  if(F.action==="sell"&&F.lots&&F.lots.length)t.lots=F.lots.slice();if(S.ed){var ntr=[];for(var i=0;i<S.tr.length;i++)ntr.push(S.tr[i].id===t.id?t:S.tr[i]);S.tr=ntr}else S.tr.push(t);S.ed=null;S.v="trades";saveLocal();toast("已儲存 ✓");render();setTimeout(function(){fetchPrices(true)},500)}
 function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S.det]={p:v,at:Date.now()};S.pv="";saveLocal();toast(S.det+" 報價已更新 ✓");render()}
 function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
 function deletePosition(sym){S.tr=S.tr.filter(function(t){return t.symbol!==sym});S.det=null;S.v="home";S.modal=null;saveLocal();toast(sym+" 已刪除");render()}
@@ -482,7 +594,12 @@ function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.t
 function openLots(sym,excludeId,uptoDate){
   var out=[],trs=S.tr.slice().sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);return ka<kb?-1:(ka>kb?1:0)});
   for(var i=0;i<trs.length;i++){var t=trs[i];if(!t||t.symbol!==sym)continue;if(excludeId&&t.id===excludeId)continue;if(uptoDate&&dtKey(t)>uptoDate)continue;
-    if(t.action==="buy"){out.push({id:t.id,p:t.price,r:t.qty,d:dtLabel(t)})}
+    if(t.action==="buy"){
+      /* p is the fee-loaded cost per SHARE so the sell picker's estimate agrees with
+         what calc() will actually book; raw keeps the untouched price for display. */
+      var mul=(t.cur==="TWD")?1000:1,g=t.price*t.qty*mul,fe=trFee(t);
+      var ups=(t.qty>0)?((g+fe)/(t.qty*mul)):t.price;
+      out.push({id:t.id,p:ups,r:t.qty,d:dtLabel(t),raw:t.price,m:isMargin(t)})}
     else{var r=t.qty;
       if(t.lots&&t.lots.length){for(var li=0;li<t.lots.length&&r>0;li++){for(var bi=0;bi<out.length;bi++){if(out[bi].id===t.lots[li]&&out[bi].r>0){var k=Math.min(r,out[bi].r);out[bi].r-=k;r-=k;break}}}
         var no=[];for(var bi2=0;bi2<out.length;bi2++){if(out[bi2].r>0)no.push(out[bi2])}out=no}
@@ -503,18 +620,21 @@ function buildLotsHtml(){
   var avail={};for(var i=0;i<ls.length;i++)avail[ls[i].id]=1;
   var keep=[];for(var i=0;i<F.lots.length;i++){if(avail[F.lots[i]])keep.push(F.lots[i])}F.lots=keep;
   var tw=F.cur==="TWD",ps=tw?"NT$":"$",mul=tw?1000:1,f=tw?fmTW:fm,un=tw?"張":"股";
-  var need=+F.qty||0,price=+F.price||0;
+  var need=+F.qty||0,price=+F.price||0,sellFee=fFee();
   var take={},r=need;
   for(var i=0;i<F.lots.length&&r>0;i++){for(var j=0;j<ls.length;j++){if(ls[j].id===F.lots[i]){var k=Math.min(r,ls[j].r);take[ls[j].id]=k;r-=k;break}}}
   var fifo={},r2=r;
   for(var j=0;j<ls.length&&r2>0;j++){var remq=ls[j].r-(take[ls[j].id]||0);if(remq<=0)continue;var k2=Math.min(r2,remq);fifo[ls[j].id]=k2;r2-=k2}
   var est=0,selQ=0,fifoQ=0;
   for(var j=0;j<ls.length;j++){var tk0=take[ls[j].id]||0,fk0=fifo[ls[j].id]||0;selQ+=tk0;fifoQ+=fk0;if(price>0)est+=(price-ls[j].p)*(tk0+fk0)*mul}
+  /* ls[].p already carries the BUY fee; subtract the share of the SELL fee that applies to
+     the quantity actually matched, so the estimate equals what calc() will book. */
+  if(price>0&&need>0&&sellFee>0)est-=sellFee*((selQ+fifoQ)/need);
   var h='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">平倉批次（點選指定順序，未選部分依 FIFO）</div>';
   for(var j=0;j<ls.length;j++){var L=ls[j],sel=F.lots.indexOf(L.id),on=sel>=0,tk=take[L.id]||0,fk=fifo[L.id]||0;
     h+='<div onclick="toggleLot(\''+L.id+'\')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+(on?"var(--up)":"var(--border)")+';border-radius:12px;margin-bottom:6px;cursor:pointer;background:'+(on?"var(--up-soft)":"transparent")+'">';
     h+='<div style="width:24px;height:24px;border-radius:7px;border:1.5px solid '+(on?"var(--up)":"var(--border2)")+';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:var(--up);flex-shrink:0">'+(on?(sel+1):"")+'</div>';
-    h+='<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">@'+ps+f(L.p)+'</div><div style="font-size:10px;color:var(--muted);margin-top:1px">'+L.d+'</div></div>';
+    h+='<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">成本 @'+ps+f(L.p)+(L.m?' <span class="badge mgn-bg">融</span>':'')+'</div><div style="font-size:10px;color:var(--muted);margin-top:1px">'+L.d+'</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:12px;font-weight:700">剩 '+L.r+' '+un+'</div>'+((tk||fk)?'<div style="font-size:10px;color:'+(tk?"var(--up)":"var(--dim)")+'">配 '+(tk+fk)+' '+un+(tk?"":" (FIFO)")+'</div>':"")+'</div>';
     h+='</div>'}
   if(need>0){
@@ -597,6 +717,7 @@ function renderSetup(){
   h+='<div onclick="copyGAS()" style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:11px;color:var(--muted);cursor:pointer;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-family:monospace;line-height:1.5">'+esc(gasCode())+'</div>';
   h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">👆 點擊上方程式碼區塊即可複製</div></div>';
   if(cfgOk())h+='<div class="card" style="padding:18px;margin-top:8px"><div style="font-size:15px;font-weight:700;margin-bottom:12px;color:var(--down)">⚠️ 危險區域</div><button class="bd" onclick="clearCfg()">🗑 清除所有設定和資料</button></div>';
+  h+='<div style="text-align:center;font-size:10px;color:var(--dim);padding:14px 0 4px;letter-spacing:0.3px">Portfolio Tracker '+APP_VER+' · 需搭配 Apps Script '+GAS_VER+'（?action=ping 可驗證）</div>';
   h+='</div></div>';
   return h;
 }
@@ -696,8 +817,8 @@ function attachChartHover(){
     var wrapRect=wrap.getBoundingClientRect(),cssX=pt.x/ratio,cssY=pt.y/ratio;
     tipDate.textContent=d.d;
     var v=d.v,view=CHART_DATA.view,D=CHART_DATA.D,primary,secondary="";
-    if(view==="mv"){primary=D+dfm(v);if(d.pnl!=null)secondary=(d.pnl>=0?"淨損益 +":"淨損益 -")+D+dfm(Math.abs(d.pnl))}
-    else if(view==="pnl"){primary=(v>=0?"+":"-")+D+dfm(Math.abs(v));if(d.mv!=null)secondary="總資產 "+D+dfm(d.mv)}
+    if(view==="mv"){primary=D+dfm(v);if(d.pnl!=null)secondary=(d.pnl>=0?"淨損益 +":"淨損益 -")+D+dfm(Math.abs(d.pnl));if(d.db>0)secondary+=" · 融資 "+D+dfm(d.db)}
+    else if(view==="pnl"){primary=(v>=0?"+":"-")+D+dfm(Math.abs(v));if(d.eq!=null)secondary="總資產 "+D+dfm(d.eq)}
     else{primary=(v>=0?"+":"")+fm(v)+"%";secondary="指數 "+fm(d.twr)}
     if(S.hide&&view!=="twr"){tipVal.innerHTML='<span class="blur">'+primary+'</span>';tipSub.innerHTML=secondary?'<span class="blur">'+secondary+'</span>':''}
     else{tipVal.textContent=primary;tipSub.textContent=secondary}
@@ -805,7 +926,9 @@ function render(passive){try{
     if(prData&&prData.qt)h+=sr("報價時間",new Date(prData.qt*1000).toLocaleString("zh-TW"),"var(--muted)");
     h+=sr("數量",H(pos.q+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#fff");
     if(dayChg!=null)h+=sr("今日漲跌",H((dayChg>=0?"+":"")+ps+f(dayChg)+" ("+(dayPct>=0?"+":"")+fm(dayPct)+"%)"),dcCol);
-    h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"var(--blue)")+sr("每股成本",ps+f(avgPS),"#fff")+sr("總成本",H(ps+f(pos.c)),"#fff");
+    h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"var(--blue)")+sr("每股成本（含手續費）",ps+f(avgPS),"#fff")+sr("總成本",H(ps+f(pos.c)),"#fff");
+    if(pos.db>0){h+=sr("融資餘額",H("-"+ps+f(pos.db)),"var(--purple)");
+      h+=sr("持倉淨值",H(mV!=null?ps+f(mV-pos.db):"—"),"var(--purple)")}
     h+=sr("損益",H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):"—"),pc)+sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
     h+=sr("已實現損益",H(rP?(rP>=0?"+":"-")+ps+f(Math.abs(rP)):ps+"0"),rP>=0?"var(--up)":"var(--down)");
     /* YTD comparison row in detail page */
@@ -824,13 +947,16 @@ function render(passive){try{
        then FIFO over whatever is left, mirroring calc(). */
     var mulD=tw?1000:1,tp={},rec={},lq=[];
     for(var i=0;i<st.length;i++){var t=st[i];
-      if(t.action==="buy"){rec[t.id]={qty:t.qty,rem:t.qty,px:t.price,rz:0};lq.push(t.id)}
-      else{var rq=t.qty,cb2=0,R;
+      /* px is the fee-loaded cost per share so each lot's P/L already nets its buy fee,
+         matching what calc() books; the row still displays the raw traded price. */
+      if(t.action==="buy"){var gB=t.price*t.qty*mulD,feB=trFee(t);
+        rec[t.id]={qty:t.qty,rem:t.qty,px:(t.qty>0?((gB+feB)/(t.qty*mulD)):t.price),rz:0,mg:isMargin(t)};lq.push(t.id)}
+      else{var rq=t.qty,cb2=0,R,feS=trFee(t);
         if(t.lots&&t.lots.length){for(var li=0;li<t.lots.length&&rq>0;li++){R=rec[t.lots[li]];if(!R||R.rem<=0)continue;
           var kk=Math.min(rq,R.rem);cb2+=kk*R.px;R.rem-=kk;R.rz+=(t.price-R.px)*kk*mulD;rq-=kk}}
         for(var qi=0;qi<lq.length&&rq>0;qi++){R=rec[lq[qi]];if(!R||R.rem<=0)continue;
           var k2=Math.min(rq,R.rem);cb2+=k2*R.px;R.rem-=k2;R.rz+=(t.price-R.px)*k2*mulD;rq-=k2}
-        cb2*=mulD;var spnl=t.price*t.qty*mulD-cb2;tp[t.id]={v:spnl,pct:cb2>0?(spnl/cb2*100):null,rz:true}}}
+        cb2*=mulD;var spnl=t.price*t.qty*mulD-feS-cb2;tp[t.id]={v:spnl,pct:cb2>0?(spnl/cb2*100):null,rz:true}}}
     for(var i=0;i<st.length;i++){var t=st[i];if(t.action!=="buy")continue;var R2=rec[t.id];
       if(R2.rem<=0){tp[t.id]={closed:true,rzv:R2.rz}}
       else if(p!=null){tp[t.id]={v:(p-R2.px)*R2.rem*mulD,pct:R2.px>0?((p-R2.px)/R2.px*100):null,part:R2.rem<R2.qty,rem:R2.rem,cq:R2.qty-R2.rem,rzv:R2.rz}}
@@ -840,8 +966,9 @@ function render(passive){try{
       var isClosed=ti&&ti.closed;
       h+='<div class="card" style="display:flex;align-items:center;gap:6px;padding:11px 14px;border-radius:14px'+(isClosed?";opacity:.45":"")+'">';
       h+='<div style="flex:1;cursor:pointer;min-width:0" onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}">';
-      h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span><span style="font-weight:700;font-size:13px">@'+ps+f(t.price)+'</span><span style="font-size:11px;color:var(--muted)">x'+H(t.qty+un)+'</span></div>';
+      h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span>'+(isMargin(t)?'<span class="badge mgn-bg">融</span>':'')+'<span style="font-weight:700;font-size:13px">@'+ps+f(t.price)+'</span><span style="font-size:11px;color:var(--muted)">x'+H(t.qty+un)+'</span></div>';
       h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+dtLabel(t);
+      var tfe=trFee(t);if(tfe>0)h+=' · <span style="color:var(--down)">費 '+ps+f(tfe)+'</span>';
       if(ti&&ti.part)h+=' · <span style="color:var(--amber)">已平 '+H(fmQ(ti.cq))+' · 剩 '+H(fmQ(ti.rem))+' '+un+'</span>';
       h+='</div></div>';
       h+='<div style="text-align:right;flex-shrink:0">';
@@ -870,12 +997,14 @@ function render(passive){try{
     h+='</div>';
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     h+=sr("賣出價格",ps+f(c.price),"#fff")+sr("賣出數量",H(c.qty+" "+un),"#fff")+sr("賣出總額",H(ps+f(sellTotal)),"#fff");
-    h+=sr("買入均價",ps+f(avgBuy),"#fff")+sr("買入成本",H(ps+f(c.cb)),"#fff");
+    if(c.fee>0)h+=sr("賣出手續費",H("-"+ps+f(c.fee)),"var(--down)");
+    h+=sr("買入均價（含手續費）",ps+f(avgBuy),"#fff")+sr("買入成本",H(ps+f(c.cb)),"#fff");
     h+=sr("實現損益",H((g?"+":"-")+ps+f(Math.abs(c.pnl))),cl2)+sr("報酬率",H(c.cb>0?(c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%":"—"),cl2)+sr("平倉日期",dtLabel(c),"#fff");
     h+='</div>';
     if(c.matches&&c.matches.length){
       h+='<div class="section-label">配對明細</div>';
-      for(var i=0;i<c.matches.length;i++){var m=c.matches[i],mPnl=(c.price*m.qty*mul)-m.cost,mg=mPnl>=0;
+      /* Pro-rate the sell fee across the matched lots so the rows add up to c.pnl. */
+      for(var i=0;i<c.matches.length;i++){var m=c.matches[i],mFee=(c.qty>0?(c.fee||0)*(m.qty/c.qty):0),mPnl=(c.price*m.qty*mul)-mFee-m.cost,mg=mPnl>=0;
         h+='<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px">';
         h+='<div><div style="display:flex;align-items:center;gap:6px"><span class="badge buy-bg">買</span><span style="font-weight:700">'+ps+f(m.buyPrice)+'</span><span style="color:var(--muted);font-size:11px">x'+m.qty+un+'</span></div>';
         h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">買入日 '+m.date+'</div></div>';
@@ -894,8 +1023,29 @@ function render(passive){try{
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" style="margin-bottom:14px">';
     h+='<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
     if(tw)h+='<div style="font-size:11px;color:var(--amber);margin-bottom:8px">💡 1張=1000股，總成本 = 股價 × 張數 × 1000</div>';
-    var tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1);
-    h+='<div style="display:flex;justify-content:space-between;padding:14px 0;border-bottom:0.5px solid var(--border);margin-bottom:14px"><span style="color:var(--muted);font-size:13px">總金額</span><span id="ftot" style="color:var(--up);font-size:20px;font-weight:700;letter-spacing:-0.4px">'+ps+(tw?fmTW(tot):fm(tot))+'</span></div>';
+    var f0=tw?fmTW:fm,tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1),fee0=fFee(),net0=(F.action==="buy")?(tot+fee0):(tot-fee0);
+    /* --- 手續費 --- */
+    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">手續費（預設 0）</div>';
+    h+='<div style="display:flex;gap:10px;margin-bottom:8px">';
+    h+='<div style="flex:1"><input class="inp" id="f_fr" type="number" step="any" inputmode="decimal" value="'+((+F.fr)?F.fr:"")+'" oninput="onFeeRate()" placeholder="費率 %"></div>';
+    h+='<div style="flex:1"><input class="inp" id="f_fe" type="number" step="any" inputmode="decimal" value="'+(fee0?(Math.round(fee0*10000)/10000):"")+'" oninput="onFeeAmt()" placeholder="金額 '+ps+'"></div>';
+    h+='</div>';
+    h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+    for(var fpi=0;fpi<FEE_PRESETS.length;fpi++)h+='<button class="fchip" onclick="setFeeRate('+FEE_PRESETS[fpi].r+')">'+FEE_PRESETS[fpi].n+'</button>';
+    h+='</div>';
+    h+='<div style="font-size:10px;color:var(--dim);margin-bottom:14px;line-height:1.5">費率為主：改費率會重算金額；直接改金額（例如低消）會反推費率。費率會記成此市場的預設值。</div>';
+    /* --- 金額小計 --- */
+    h+='<div style="background:var(--surface2);border-radius:12px;padding:10px 14px;margin-bottom:14px">';
+    h+='<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:var(--muted);font-size:12px">成交金額</span><span id="ftot" style="font-size:14px;font-weight:600">'+ps+f0(tot)+'</span></div>';
+    h+='<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:var(--muted);font-size:12px">手續費</span><span id="ffee" style="font-size:14px;font-weight:600;color:var(--down)">'+(fee0>0?"-":"")+ps+f0(fee0)+'</span></div>';
+    h+='<div style="display:flex;justify-content:space-between;padding:7px 0 2px;border-top:0.5px solid var(--border);margin-top:4px"><span id="fnetl" style="color:var(--muted);font-size:13px">'+(F.action==="buy"?"實付總額":"實收淨額")+'</span><span id="fnet" style="color:var(--up);font-size:20px;font-weight:700;letter-spacing:-0.4px">'+ps+f0(net0)+'</span></div>';
+    h+='</div>';
+    /* --- 資金來源（僅買入）--- */
+    if(F.action==="buy"){
+      h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">資金來源</div>';
+      h+='<div style="display:flex;gap:8px;margin-bottom:6px"><button class="tg '+(F.fd!=="margin"?"on":"")+'" onclick="setFFd(\'cash\')">💵 現金</button><button class="tg '+(F.fd==="margin"?"mgn":"")+'" onclick="setFFd(\'margin\')">📈 融資</button></div>';
+      h+='<div style="font-size:10px;color:var(--dim);margin-bottom:14px;line-height:1.55">'+(F.fd==="margin"?'融資：市值與融資餘額同額增加，<b style="color:var(--purple)">總資產(淨值)不會跳動</b>，只有淨損益隨股價變動。':'現金：總資產會隨這筆投入而增加（原本的行為）。')+'</div>';
+    }
     h+='<div style="display:flex;gap:10px;margin-bottom:14px"><div style="flex:1.35"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">日期</div><input class="inp" id="f_d" type="date" value="'+F.date+'" onchange="updTot()"></div><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">時間</div><input class="inp" id="f_t" type="time" value="'+(F.tm||"")+'" onchange="updTot()"></div></div>';
     h+='<div id="lotsBox">'+buildLotsHtml()+'</div>';
     var ok=F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0;
@@ -915,6 +1065,8 @@ function render(passive){try{
     h+='<button class="dd-item" onclick="if(confirm(\'從雲端下載將覆蓋本機資料，確定？\'))cloudLoad()"><span class="dd-icon">↓</span><span>從雲端下載</span></button>';
     h+='<div class="dd-divider"></div>';
     h+='<button class="dd-item" onclick="S.menu=false;S.v=\'setup\';render()"><span class="dd-icon">⚙</span><span>API 設定</span></button>';
+    h+='<div class="dd-divider"></div>';
+    h+='<div style="padding:6px 12px 4px;font-size:10px;color:var(--dim);letter-spacing:0.3px">版本 '+APP_VER+' · GAS '+GAS_VER+'</div>';
     h+='</div>';
   }
   h+='<div class="pst">';
@@ -936,14 +1088,19 @@ function render(passive){try{
       h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">📊</div><div style="font-weight:700;font-size:22px;margin-bottom:8px;letter-spacing:-0.4px">開始追蹤投資</div><div style="color:var(--muted);font-size:13px;margin-bottom:24px">支援美股+台股 · 手動雲端同步</div></div>';
     } else {
       /* ----- Aggregates ----- */
-      var tMV=0,tU=0,tRP=0,tTC=0,tDay=0;
+      var tMV=0,tDB=0,tU=0,tRP=0,tTC=0,tDay=0;
       for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;
         var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;
-        tMV+=toDisp(mv,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur);
+        tMV+=toDisp(mv,x.cur);tDB+=toDisp(x.db||0,x.cur);tU+=p?toDisp((p*(tw?1000:1)-x.avg)*x.q,x.cur):0;tTC+=toDisp(x.c,x.cur);
         var prData=S.pr[x.s],pcv=prData&&prData.pc?prData.pc:null;
         if(p&&pcv)tDay+=toDisp((p-pcv)*x.q*(tw?1000:1),x.cur)}
       for(var i=0;i<pf.cl.length;i++){if(!isHidden(pf.cl[i].s))tRP+=toDisp(pf.cl[i].pnl,pf.cl[i].cur)}
       var totalPnl=tU+tRP,totalPnlPct=tTC>0?(totalPnl/tTC*100):0,D=ds();
+      /* 總資產 = 淨值 = 持倉市值 − 融資餘額。tDB is 0 for an all-cash book, so this is
+         numerically identical to the old tMV for anyone not using margin. */
+      var tEQ=tMV-tDB;
+      /* 今日 % stays measured against MARKET VALUE, not equity: it answers "我的持股今天
+         漲跌多少"，跟下方每檔的 % 同一把尺；用淨值會被槓桿放大到看不懂。 */
       var dayPct=tMV-tDay>0?(tDay/(tMV-tDay)*100):0;
 
       /* === TODAY HERO CARD === */
@@ -981,7 +1138,7 @@ function render(passive){try{
       /* === PORTFOLIO === */
       h+='<div class="section-label">PORTFOLIO · 投資組合</div>';
       h+='<div class="port-card">';
-      h+='<div class="port-main"><div class="port-label">總資產</div><div class="port-val">'+H(D+dfm(tMV))+'</div>';
+      h+='<div class="port-main"><div class="port-label">總資產'+(tDB>0?'<span style="color:var(--purple);font-weight:600"> · 淨值</span>':'')+'</div><div class="port-val">'+H(D+dfm(tEQ))+'</div>';
       var tpc=totalPnl>=0?"var(--up)":"var(--down)";
       h+='<div class="port-sub" style="color:'+tpc+'">'+H((totalPnl>=0?"+":"-")+D+dfm(Math.abs(totalPnl)))+' 全期 ('+H((totalPnlPct>=0?"+":"")+fm(totalPnlPct)+"%")+')</div>';
       h+='</div><div class="port-aux">';
@@ -989,6 +1146,16 @@ function render(passive){try{
       h+='<div class="port-mini"><span class="port-mini-l">已實現</span><span class="port-mini-v" style="color:'+(tRP>=0?"var(--up)":"var(--down)")+'">'+H((tRP>=0?"+":"-")+dfmK(Math.abs(tRP)))+'</span></div>';
       h+='<div class="port-mini"><span class="port-mini-l">成本</span><span class="port-mini-v" style="color:#fff">'+H(dfmK(tTC))+'</span></div>';
       h+='</div></div>';
+      /* Margin strip: only rendered when there IS debt, so an all-cash portfolio looks
+         exactly as it did before v8. */
+      if(tDB>0){
+        var lev=tEQ>0?(tMV/tEQ):0;
+        h+='<div class="card" style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;font-size:11px;flex-wrap:wrap;gap:8px">';
+        h+='<span style="color:var(--muted)">持倉市值 <b style="color:#fff;font-size:12px">'+H(D+dfm(tMV))+'</b></span>';
+        h+='<span style="color:var(--muted)">融資餘額 <b style="color:var(--purple);font-size:12px">'+H("-"+D+dfm(tDB))+'</b></span>';
+        h+='<span style="color:var(--muted)">槓桿 <b style="color:'+(lev>2?"var(--amber)":"#fff")+';font-size:12px">'+(lev>0?fm(lev)+"x":"—")+'</b></span>';
+        h+='</div>';
+      }
 
       /* === PERFORMANCE CARD === */
       h+='<div class="section-label">PERFORMANCE · 績效</div>';
@@ -1008,8 +1175,8 @@ function render(passive){try{
       h+='<button class="rp '+(S.chartRange==="custom"?"on":"")+'" onclick="S.chartRange=\'custom\';if(!S.chartCustom)S.chartCustom={};render()">自訂</button></div>';
       if(S.chartRange==="custom"){var ccf=S.chartCustom&&S.chartCustom.from||"",cct=S.chartCustom&&S.chartCustom.to||"";h+='<div style="display:flex;gap:8px;margin-top:10px"><input type="date" class="inp" style="flex:1;font-size:12px;padding:8px" value="'+ccf+'" onchange="if(!S.chartCustom)S.chartCustom={};S.chartCustom.from=this.value;render()"><input type="date" class="inp" style="flex:1;font-size:12px;padding:8px" value="'+cct+'" onchange="if(!S.chartCustom)S.chartCustom={};S.chartCustom.to=this.value;render()"></div>'}
       var hint="";
-      if(S.chartView==="mv")hint="總資產 = 持倉市值。會跟著資金進出變動。";
-      else hint="淨損益 = 市值 − 累計投入成本。不受加碼/減碼影響，純看實際賺賠。";
+      if(S.chartView==="mv")hint="總資產 = 持倉市值 − 融資餘額（淨值）。現金買入會隨投入變動；融資買入不會跳動。";
+      else hint="淨損益 = 市值 − 累計投入成本（含手續費）。不受加碼/減碼與融資影響，純看實際賺賠。";
       h+='<div style="margin-top:10px;font-size:10px;color:var(--dim);line-height:1.55;letter-spacing:0.2px">💡 '+hint+'</div>';
       h+='</div>';
 
@@ -1023,7 +1190,7 @@ function render(passive){try{
         h+='<div class="hold" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">';
         h+='<div class="hold-top">';
         h+='<div class="hold-logo" style="background:'+tCol+'22;color:'+tCol+'">'+(tw?'🇹🇼':x.s.charAt(0))+'</div>';
-        h+='<div class="hold-mid"><div class="hold-sym">'+x.s+(tw?' <span class="badge tw-bg">台</span>':"")+'</div>';
+        h+='<div class="hold-mid"><div class="hold-sym">'+x.s+(tw?' <span class="badge tw-bg">台</span>':"")+((x.db>0)?' <span class="badge mgn-bg">融</span>':"")+'</div>';
         h+='<div class="hold-meta">'+H(x.q+(tw?" 張":" 股"))+' @ '+ps+f(avgPS)+(p?' · 現 '+ps+f(p)+sessBadge(x.s):"")+'</div></div>';
         h+='<div class="hold-right"><div class="hold-pnl" style="color:'+pc+'">'+H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):ps+f(x.c))+'</div>';
         h+='<div class="hold-pnlp" style="color:'+pc+'">'+H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"輸入報價")+'</div></div>';
@@ -1110,7 +1277,7 @@ function render(passive){try{
     var tIx={};for(var ti=0;ti<S.tr.length;ti++)tIx[S.tr[ti].id]=ti;
     var sorted=tFiltered.sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?1:-1;return(tIx[b.id]||0)-(tIx[a.id]||0)});
     for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
-      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+f(tPrice)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(tQty+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+" · "+dtLabel(t)+'</div></div>';
+      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+f(tPrice)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(tQty+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
       h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
       h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
   }
