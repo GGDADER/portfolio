@@ -172,8 +172,18 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v8.1";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v8.2";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v10";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
+
+/* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
+   時間到就強制解鎖，確保按鈕永遠有反應。 */
+var FETCH_TIMEOUT_MS=9000;     /* 單一報價請求 */
+var BATCH_TIMEOUT_MS=15000;    /* 批次報價（GAS）*/
+var RATE_TIMEOUT_MS=8000;      /* 匯率 */
+var REFRESH_TIMEOUT_MS=28000;  /* 整次更新的保險絲 */
+var CLOUD_TIMEOUT_MS=20000;    /* 雲端上傳/下載 */
+var POLL_LIVE_MS=60000;        /* 盤中自動更新間隔 */
+var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
 
 /* 手續費快捷鍵。可自由增刪。
      n   顯示名稱
@@ -200,6 +210,15 @@ var FEE_PRESETS=[
 
 /* ============================================================
    CHANGELOG
+   v8.2  修正「手動按更新報價沒反應、要重整網頁」（v7 引入的 regression）
+         - fetchRate / fetchOne 原本沒有 timeout，一旦卡住 S.pBusy 這把鎖永遠不解，
+           之後每次按 🔄 都被 `if(S.pBusy)return` 靜靜吃掉 => 現在每個請求都有硬逾時
+         - 手動更新改為「一定執行」：會接管並作廢進行中的背景更新，不再被鎖擋住
+         - 新增 REFRESH_TIMEOUT_MS 保險絲，逾時強制解鎖並提示，不可能再卡死
+         - 用世代編號(pGen)防止被作廢的舊請求覆蓋新報價
+         - 匯率與批次報價改並行；Finnhub 補抓改並行（原本序列 + 每檔 400ms sleep）
+         - YTD 基準改在報價畫完後才抓，且每檔每次載入只試一次（原本每次更新都重試，
+           12s timeout x 序列，是把鎖握住最久的元凶）
    v8.1  手續費快捷鍵修正
          - IBKR 0.05% 是錯的（高估約 14 倍），依實際對帳單改為 0.0035%
          - 美股複委託統一成單一 0.08%（移除舊的 0.5% / 1%）
@@ -237,7 +256,7 @@ function nowHM(){var d=new Date();return("0"+d.getHours()).slice(-2)+":"+("0"+d.
 
 var S={
   tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,del:null,
-  pv:"",pLoading:false,lastUp:null,lastFail:null,pBusy:false,_lastTry:0,_pt:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),
+  pv:"",pLoading:false,lastUp:null,lastFail:null,pBusy:false,_lastTry:0,_pt:null,pGen:0,pStart:0,_pw:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),
   hide:ld("pt_hide",false),synced:false,syncing:false,
   chartRange:"1M",chartCustom:null,chartView:ld("pt_cv","mv"),
   hiddenSyms:ld("pt_hidden",[]),
@@ -245,7 +264,9 @@ var S={
   trF:{r:"all",s:"all"},clF:{r:"all",res:"all",syms:[],q:""},
   ytd:ld(ytdKey(),{}),  /* per-symbol YTD opening price */
   ytdLoading:false,
-  ytdFailed:{}  /* per-symbol: true if last fetch attempt failed (transient, not persisted) */
+  ytdFailed:{},  /* per-symbol: reason string if the last fetch attempt failed (not persisted) */
+  ytdTried:{},   /* per-symbol: attempted this page load — stops a dead baseline being retried forever */
+  ytdBusy:false
 };
 var CHART_DATA=null;
 
@@ -316,11 +337,11 @@ function sessBadge(sym){var d=S.pr[sym];if(!d||!liveSess(d))return"";
   return""}
 function tickerColor(sym){var palette=["#00FF88","#5b9cf5","#a48bf5","#fbbf24","#FF5252","#60a5fa","#f472b6","#34d399","#fb923c"];var h=0;for(var i=0;i<sym.length;i++)h=(h*31+sym.charCodeAt(i))>>>0;return palette[h%palette.length]}
 
-function cloudSave(){if(!GS){toast("請先設定 Google Apps Script URL");return}S.syncing=true;S.menu=false;render();var hist=ld(HK,[]);fetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr),history:JSON.stringify(hist)})}).then(function(){S.synced=true;S.syncing=false;toast("已上傳至雲端 ✓")}).catch(function(){S.syncing=false;toast("上傳失敗");render()})}
+function cloudSave(){if(!GS){toast("請先設定 Google Apps Script URL");return}S.syncing=true;S.menu=false;render();var hist=ld(HK,[]);fetchT(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(S.tr),prices:JSON.stringify(S.pr),history:JSON.stringify(hist)})},CLOUD_TIMEOUT_MS).then(function(){S.synced=true;S.syncing=false;toast("已上傳至雲端 ✓")}).catch(function(){S.syncing=false;toast("上傳失敗");render()})}
 function cloudLoad(){
   if(!GS){toast("請先設定 Google Apps Script URL");return}
   S.menu=false;S.syncing=true;render();
-  fetch(GS+"?action=read").then(function(r){return r.json()}).then(function(d){
+  fetchT(GS+"?action=read&_t="+Date.now(),{cache:"no-store"},CLOUD_TIMEOUT_MS).then(function(r){return r.json()}).then(function(d){
     if(d.ok&&d.trades){try{
       var ct=JSON.parse(d.trades),cp=d.prices?JSON.parse(d.prices):{};
       if(Array.isArray(ct)){
@@ -381,23 +402,41 @@ function calc(){
   return{op:op,cl:cl};
 }
 
+/* Every network call gets a hard deadline. Without one a single stalled request (mobile
+   network drop, Apps Script cold start, iOS freezing a backgrounded PWA) leaves the
+   refresh lock held forever, and from then on every press of 🔄 returns immediately and
+   silently. That was the "按了沒反應，要重整" bug. */
+function fetchT(url,opts,ms){
+  var o={};if(opts)for(var k in opts)o[k]=opts[k];
+  var ctrl=(typeof AbortController!=="undefined")?new AbortController():null;
+  if(ctrl)o.signal=ctrl.signal;
+  var tid=setTimeout(function(){if(ctrl)ctrl.abort()},ms||FETCH_TIMEOUT_MS);
+  return fetch(url,o).then(
+    function(r){clearTimeout(tid);return r},
+    function(e){clearTimeout(tid);throw e});
+}
+
 function fetchOne(sym){
-  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetch(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){return null})}
+  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){return null})}
   if(!FK)return Promise.resolve(null);
-  return fetch("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
+  return fetchT("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
 }
 function batchQuotes(syms){
   if(!GS||!syms.length)return Promise.resolve({});
-  var ctrl=(typeof AbortController!=="undefined")?new AbortController():null;
-  var tid=setTimeout(function(){if(ctrl)ctrl.abort()},20000);
-  /* _t cache-buster + no-store: Apps Script web apps answer via a redirect to
+  /* _t cache-buster + no-store: Apps Script answers via a redirect to
      script.googleusercontent.com with cacheable headers, and an identical URL every
      minute is exactly what a browser (iOS PWA especially) will serve from cache. */
-  var o=ctrl?{signal:ctrl.signal,cache:"no-store"}:{cache:"no-store"};
-  return fetch(GS+"?action=quotes&syms="+encodeURIComponent(syms.join(","))+"&mkt=us&_t="+Date.now(),o)
-    .then(function(r){clearTimeout(tid);return r.json()})
-    .then(function(d){return(d&&d.ok&&d.q)?d.q:{}}).catch(function(){clearTimeout(tid);return{}})}
-function fetchRate(){return fetch("https://open.er-api.com/v6/latest/USD").then(function(r){return r.json()}).then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}}).catch(function(){})}
+  return fetchT(GS+"?action=quotes&syms="+encodeURIComponent(syms.join(","))+"&mkt=us&_t="+Date.now(),{cache:"no-store"},BATCH_TIMEOUT_MS)
+    .then(function(r){return r.json()})
+    .then(function(d){return(d&&d.ok&&d.q)?d.q:{}})
+    .catch(function(){return{}})
+}
+function fetchRate(){
+  return fetchT("https://open.er-api.com/v6/latest/USD",{},RATE_TIMEOUT_MS)
+    .then(function(r){return r.json()})
+    .then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}})
+    .catch(function(){})
+}
 
 /* === YTD baseline fetch ===
    v4 change: Finnhub /stock/candle is now a paid endpoint (returns 403 on free tier),
@@ -441,50 +480,87 @@ function ageLabel(sec){if(sec==null)return"";if(sec<90)return"\u5373\u6642";if(s
    so it stays correct through DST without a timezone library; an hour of slop at the
    edges only ever costs one extra poll. */
 function usMarketLive(){var et=new Date(Date.now()-4*3600000),d=et.getUTCDay(),h=et.getUTCHours()+et.getUTCMinutes()/60;if(d===0||d===6)return false;return h>=4&&h<20}
-function pollDelay(){return usMarketLive()?60000:300000}
+function pollDelay(){return usMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
 
 function fetchPrices(silent){
   var pf=calc();if(!pf.op.length)return;
-  if(S.pBusy)return;                                   /* never stack overlapping refreshes */
-  if(silent&&Date.now()-S._lastTry<15000)return;        /* focus events can fire in bursts */
-  S.pBusy=true;S._lastTry=Date.now();
+  var now=Date.now();
+  if(S.pBusy){
+    /* Only an automatic poll defers, and only while the running refresh still looks
+       alive. A manual tap falls through and takes over. */
+    if(silent&&(now-(S.pStart||0))<REFRESH_TIMEOUT_MS+2000)return;
+  }else if(silent&&now-S._lastTry<15000)return;
+  var gen=++S.pGen;
+  S.pBusy=true;S.pStart=now;S._lastTry=now;
   if(!silent){S.pLoading=true;render()}
+  function alive(){return gen===S.pGen}
+
+  function finish(ok,stale,msg){
+    if(!alive())return;
+    if(S._pw){clearTimeout(S._pw);S._pw=null}
+    S.pBusy=false;S.pLoading=false;
+    if(ok){S.lastUp=new Date();S.lastFail=null}else{S.lastFail=new Date()}
+    sv(PK,S.pr);snapHistory();
+    if(!silent)toast(ok?("\u5df2\u66f4\u65b0 "+ok+" \u6a94\u5831\u50f9"+(stale?"\uff08"+stale+" \u6a94\u70ba\u5ef6\u9072\u5831\u50f9\uff09":" \u2713")):(msg||"\u66f4\u65b0\u5931\u6557\uff1a\u5831\u50f9\u4f86\u6e90\u6c92\u6709\u56de\u61c9"));
+    render(true);
+    fetchYtdQueue(pf);
+  }
+  /* Belt and braces: even if a promise somehow never settles, this releases the lock so
+     the next tap works. Nothing may hold the lock longer than this. */
+  S._pw=setTimeout(function(){finish(0,0,"\u66f4\u65b0\u903e\u6642\uff0c\u8acb\u518d\u8a66\u4e00\u6b21")},REFRESH_TIMEOUT_MS);
+
   var usSyms=[];for(var ui=0;ui<pf.op.length;ui++){if(!isTW(pf.op[ui].s))usSyms.push(pf.op[ui].s)}
   function nowSec(){return Math.floor(Date.now()/1000)}
-  fetchRate().then(function(){return batchQuotes(usSyms)}).then(function(bq){
-    var chain=Promise.resolve(),np={};for(var k in S.pr)np[k]=S.pr[k];var ok=0,stale=0;
-    for(var i=0;i<pf.op.length;i++){(function(pos){var hit=false;chain=chain.then(function(){
-      var b=bq[pos.s];
-      /* A quote is only usable if it is genuinely recent. While a session is live, anything
-         whose own timestamp is over 5 minutes old is stale data dressed up as a price, so
-         fall through to Finnhub (real-time on the free tier) instead of trusting it. */
+
+  /* Rate and quotes are independent, so they run together instead of one after the other.
+     Neither ever rejects (both swallow their own errors), so Promise.all can't short out. */
+  Promise.all([fetchRate(),batchQuotes(usSyms)]).then(function(res){
+    if(!alive())return null;
+    var bq=res[1]||{},np={};for(var k in S.pr)np[k]=S.pr[k];
+    var miss=[],ok=0,stale=0;
+    for(var i=0;i<pf.op.length;i++){var pos=pf.op[i],b=bq[pos.s];
+      /* A quote is only usable if it is genuinely recent. While a session is live,
+         anything older than 5 minutes is stale data dressed up as a price. */
       var live=b&&b.sess&&b.sess!=="closed";
       var fresh=b&&b.p>0&&(!live||!b.ts||(nowSec()-b.ts)<300);
-      if(fresh){np[pos.s]={p:b.p,pc:b.prev||null,rp:b.rp||null,sess:b.sess||null,qt:b.ts||null,at:Date.now(),src:b.src||"y"};ok++;return null}
-      hit=true;
-      return fetchOne(pos.s).then(function(r){
-        if(r&&r.p){np[pos.s]={p:r.p,pc:r.pc||(b?b.prev:null),rp:b?b.rp:null,sess:b?b.sess:null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
-        else if(b&&b.p>0){np[pos.s]={p:b.p,pc:b.prev||null,rp:b.rp||null,sess:b.sess||null,qt:b.ts||null,at:Date.now(),src:"y-stale"};ok++;stale++}
-      })})
-        .then(function(){var cached=S.ytd[pos.s]&&S.ytd[pos.s]>0;if(!cached)hit=true;return fetchYtdBaseline(pos.s,pos.cur)})
-        .then(function(){return hit?new Promise(function(re){setTimeout(re,400)}):null})
-    })(pf.op[i])}
-    return chain.then(function(){
-      S.pr=np;S.pLoading=false;S.pBusy=false;
-      /* Only a refresh that actually landed a quote may advance lastUp. Stamping it
-         unconditionally is what let a total failure still render as "\u66f4\u65b0\u65bc \u525b\u525b". */
-      if(ok){S.lastUp=new Date();S.lastFail=null}else{S.lastFail=new Date()}
-      sv(PK,np);snapHistory();
-      if(!silent)toast(ok?("\u5df2\u66f4\u65b0 "+ok+" \u6a94\u5831\u50f9"+(stale?"\uff08"+stale+" \u6a94\u70ba\u5ef6\u9072\u5831\u50f9\uff09":" \u2713")):"\u66f4\u65b0\u5931\u6557\uff1a\u5831\u50f9\u4f86\u6e90\u6c92\u6709\u56de\u61c9");
-      /* A silent refresh used to update state and never repaint, so auto-refreshed prices
-         sat invisible until the user happened to tap something. */
-      else render(true);
-    })
-  }).catch(function(e){
-    S.pLoading=false;S.pBusy=false;S.lastFail=new Date();
-    if(!silent)toast("\u66f4\u65b0\u5931\u6557\uff1a"+((e&&e.message)||"\u672a\u77e5\u932f\u8aa4"));
-    render(true);
-  })
+      if(fresh){np[pos.s]={p:b.p,pc:b.prev||null,rp:b.rp||null,sess:b.sess||null,qt:b.ts||null,at:Date.now(),src:b.src||"y"};ok++}
+      else miss.push({pos:pos,b:b})}
+    /* Fallbacks now run in PARALLEL. The old code chained them with a 400ms sleep each, so
+       one slow symbol delayed every symbol behind it and stretched a refresh well past the
+       point where the user had given up and tapped again. */
+    var jobs=[];
+    for(var m=0;m<miss.length;m++){(function(mi){
+      jobs.push(fetchOne(mi.pos.s).then(function(r){
+        if(r&&r.p){np[mi.pos.s]={p:r.p,pc:r.pc||(mi.b?mi.b.prev:null),rp:mi.b?mi.b.rp:null,sess:mi.b?mi.b.sess:null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
+        else if(mi.b&&mi.b.p>0){np[mi.pos.s]={p:mi.b.p,pc:mi.b.prev||null,rp:mi.b.rp||null,sess:mi.b.sess||null,qt:mi.b.ts||null,at:Date.now(),src:"y-stale"};ok++;stale++}
+      }))})(miss[m])}
+    return Promise.all(jobs).then(function(){
+      if(!alive())return;
+      S.pr=np;finish(ok,stale)})
+  }).catch(function(e){finish(0,0,"\u66f4\u65b0\u5931\u6557\uff1a"+((e&&e.message)||"\u672a\u77e5\u932f\u8aa4"))})
+}
+
+/* YTD baselines run AFTER the prices are painted, and each symbol is attempted at most
+   once per page load. Previously a symbol whose baseline could not be fetched was retried
+   on EVERY refresh, serially, with a 12-second timeout each -- four such symbols meant a
+   single refresh held the lock for the best part of a minute. The 重試 link in the
+   holdings row clears the flag when the user wants another go. */
+function fetchYtdQueue(pf){
+  if(S.ytdBusy)return;
+  var todo=[];
+  for(var i=0;i<pf.op.length;i++){var x=pf.op[i];
+    if(S.ytd[x.s]&&S.ytd[x.s]>0)continue;
+    if(S.ytdTried[x.s])continue;
+    todo.push(x)}
+  if(!todo.length)return;
+  S.ytdBusy=true;
+  var chain=Promise.resolve();
+  for(var j=0;j<todo.length;j++){(function(x){
+    S.ytdTried[x.s]=1;
+    chain=chain.then(function(){return fetchYtdBaseline(x.s,x.cur)})
+               .then(function(){render(true);return new Promise(function(re){setTimeout(re,250)})})
+  })(todo[j])}
+  chain.then(function(){S.ytdBusy=false;render(true)},function(){S.ytdBusy=false;render(true)})
 }
 
 function snapHistory(){
@@ -1235,7 +1311,7 @@ function render(passive){try{
             h+='<div class="hold-ytd">YTD 市場 '+H((marketYtd>=0?"+":"")+fm(marketYtd)+"%")+' <span class="hold-ytd-cmp '+aCls+'" title="你的報酬率 vs 市場 YTD 的差距（眼光）">'+H((alpha>=0?"+":"")+fm(alpha)+" pp")+'</span></div>';
           } else if(p&&S.ytdFailed[x.s]){
             var reasonStr=typeof S.ytdFailed[x.s]==="string"?S.ytdFailed[x.s]:"未知";
-            h+='<div class="hold-ytd" style="color:var(--dim)">YTD: 暫無年初價 <button onclick="event.stopPropagation();delete S.ytdFailed[\''+x.s+'\'];fetchYtdBaseline(\''+x.s+'\',\''+x.cur+'\').then(function(){render()})" title="'+esc(reasonStr)+'" style="background:0;border:0;color:var(--blue);cursor:pointer;font-size:11px;font-family:inherit;padding:0 4px;text-decoration:underline">重試</button></div>';
+            h+='<div class="hold-ytd" style="color:var(--dim)">YTD: 暫無年初價 <button onclick="event.stopPropagation();delete S.ytdFailed[\''+x.s+'\'];delete S.ytdTried[\''+x.s+'\'];fetchYtdBaseline(\''+x.s+'\',\''+x.cur+'\').then(function(){render()})" title="'+esc(reasonStr)+'" style="background:0;border:0;color:var(--blue);cursor:pointer;font-size:11px;font-family:inherit;padding:0 4px;text-decoration:underline">重試</button></div>';
           } else if(p&&!ytdBase) h+='<div class="hold-ytd" style="color:var(--dim)">YTD 載入中…</div>';
           h+='</div>';
         }
