@@ -172,7 +172,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.2";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v9.3";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v11";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -183,6 +183,7 @@ var RATE_TIMEOUT_MS=8000;      /* 匯率 */
 var REFRESH_TIMEOUT_MS=28000;  /* 整次更新的保險絲 */
 var CLOUD_TIMEOUT_MS=20000;    /* 雲端上傳/下載 */
 var SYNC_POST_TIMEOUT_MS=40000;/* 寫入：GAS 端最多會為了鎖等 25 秒，前端要等得比它久 */
+var GAS_COOL_MS=[120000,300000,600000];/* GAS 沒回應後，自動更新暫停呼叫它：2 → 5 → 10 分鐘 */
 var POLL_LIVE_MS=60000;        /* 盤中自動更新間隔 */
 var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
 
@@ -412,7 +413,7 @@ function gasFetch(url,opts,ms){
     },function(){throw gasErr("network","下載 GAS 回應時連線中斷")})
   },function(e){
     if(e&&e.kind)throw e;
-    if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Apps Script 冷啟動或網路很慢）");
+    if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Apps Script 塞住、冷啟動，或網路很慢）");
     throw gasErr("network","連不到 Google Apps Script（網路斷線、防火牆或擴充功能擋住 script.google.com，或這台的 GAS 網址已失效）")})}
 var CONN_KINDS={network:1,html:1,http:1};
 var SYNC_SHORT={busy:"雲端忙碌中",network:"連不到 Google",timeout:"Google 逾時",html:"GAS 網址或權限有誤",http:"GAS 網址有誤",parse:"GAS 回應異常",gas:"GAS 執行錯誤",data:"雲端資料異常",bug:"同步程式錯誤"};
@@ -438,7 +439,7 @@ function syncNow(opts){
         return M})
   }).then(function(M){
     var c=applyMerged(M);
-    S.syncing=false;S.synced=true;S.syncErr=null;S._syFail=0;S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
+    S.syncing=false;S.synced=true;S.syncErr=null;S._syFail=0;gasOkNow();S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
     var parts=[];if(c.add)parts.push("新增 "+c.add);if(c.upd)parts.push("更新 "+c.upd);if(c.rem)parts.push("移除 "+c.rem);
     var msg="☁️ 已同步 · 共 "+c.n+" 筆"+(parts.length?"（"+parts.join("、")+"）":"");
     if(!serverMerged)msg+=" · ⚠ GAS 未更新到 "+GAS_VER;
@@ -452,7 +453,8 @@ function syncNow(opts){
        A single background miss of that kind retries quietly; the banner only appears when it
        keeps failing, or straight away for anything a retry cannot fix (bad URL, GAS error). */
     if(silent&&transient&&S._syFail<2)S.syncErr=null;else S.syncErr={kind:kind,msg:msg,at:Date.now()};
-    if(transient&&cfgOk()){var dl=[20000,60000,300000][Math.min(S._syFail-1,2)];S._syRT=setTimeout(function(){S._syRT=null;syncNow({silent:true})},dl)}
+    if(kind==="network"||kind==="timeout")gasTrip();
+    if(transient&&cfgOk()){var dl=[20000,60000,300000][Math.min(S._syFail-1,2)];S._syRTat=Date.now()+dl;S._syRT=setTimeout(function(){S._syRT=null;syncNow({silent:true})},dl)}
     if(!silent)toast("同步失敗："+msg);
     render(true)});
 }
@@ -554,8 +556,18 @@ function fetchT(url,opts,ms){
     function(e){clearTimeout(tid);throw e});
 }
 
+/* v9.3 -- keep Apps Script from drowning in our own requests.
+   A request the browser gives up on keeps running on Google's side (up to 6 minutes when
+   Yahoo or TWSE hangs), and one Apps Script only runs so many at a time. Polling it every
+   minute from every open tab -- hidden ones too, and TW quotes all night -- let those pile
+   up until it stopped answering anything, sync included. Now, after a GAS call fails the
+   automatic polls leave GAS alone for a while (Finnhub still serves US prices), and any
+   answer from GAS ends the pause. */
+function gasTrip(){if(gasCooling())return;S._gasFail=(S._gasFail||0)+1;S._gasCoolUntil=Date.now()+GAS_COOL_MS[Math.min(S._gasFail-1,GAS_COOL_MS.length-1)]}
+function gasOkNow(){S._gasFail=0;S._gasCoolUntil=0}
+function gasCooling(){return!!(S._gasCoolUntil&&Date.now()<S._gasCoolUntil)}
 function fetchOne(sym){
-  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){return null})}
+  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok)gasOkNow();return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){gasTrip();return null})}
   if(!FK)return Promise.resolve(null);
   return fetchT("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
 }
@@ -566,8 +578,8 @@ function batchQuotes(syms){
      minute is exactly what a browser (iOS PWA especially) will serve from cache. */
   return fetchT(GS+"?action=quotes&syms="+encodeURIComponent(syms.join(","))+"&mkt=us&_t="+Date.now(),{cache:"no-store"},BATCH_TIMEOUT_MS)
     .then(function(r){return r.json()})
-    .then(function(d){return(d&&d.ok&&d.q)?d.q:{}})
-    .catch(function(){return{}})
+    .then(function(d){if(d&&d.ok){gasOkNow();return d.q||{}}if(d&&/too many|quota|次數/i.test(String(d.e||"")))gasTrip();return{}})
+    .catch(function(){gasTrip();return{}})
 }
 function fetchRate(){
   return fetchT("https://open.er-api.com/v6/latest/USD",{},RATE_TIMEOUT_MS)
@@ -601,7 +613,7 @@ function fetchYtdBaseline(sym,cur){
       S.ytdFailed[sym]=reasons.join(" | ");
       return null;
     }).catch(function(e){
-      clearTimeout(tid);
+      clearTimeout(tid);gasTrip();
       if(e&&e.name==="AbortError")S.ytdFailed[sym]="GAS 逾時 12 秒未回應（可能是外部資料源卡住）";
       else S.ytdFailed[sym]="網路錯誤: "+(e&&e.message||"unknown");
       return null;
@@ -633,6 +645,20 @@ function twCloseBefore(ms){var e=new Date(ms+8*3600000),hm=e.getUTCHours()*60+e.
   if(t.getUTCDay()===0||t.getUTCDay()===6||hm<540)t=prevWeekday(t);
   t=prevWeekday(t);return Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),13,30)-8*3600000}
 function usMarketLive(){var et=new Date(Date.now()+etOffset(Date.now())*3600000),d=et.getUTCDay(),h=et.getUTCHours()+et.getUTCMinutes()/60;if(d===0||d===6)return false;return h>=4&&h<20}
+function twMarketLive(ms){var e=new Date((ms||Date.now())+8*3600000),d=e.getUTCDay(),hm=e.getUTCHours()*60+e.getUTCMinutes();return d>=1&&d<=5&&hm>=540&&hm<815}
+/* The most recent TWSE close (13:30 Taipei, weekdays) at or before ms. */
+function twLastClose(ms){var e=new Date(ms+8*3600000),hm=e.getUTCHours()*60+e.getUTCMinutes(),t=new Date(Date.UTC(e.getUTCFullYear(),e.getUTCMonth(),e.getUTCDate()));
+  if(t.getUTCDay()===0||t.getUTCDay()===6||hm<810)t=prevWeekday(t);
+  return Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),13,30)-8*3600000}
+/* The most recent end of the US extended session (20:00 ET, weekdays) at or before ms. */
+function usLastEnd(ms){var e=new Date(ms+etOffset(ms)*3600000),t=new Date(Date.UTC(e.getUTCFullYear(),e.getUTCMonth(),e.getUTCDate()));
+  if(t.getUTCDay()===0||t.getUTCDay()===6||e.getUTCHours()<20)t=prevWeekday(t);
+  var g=Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),20,0);return g-etOffset(g)*3600000}
+/* Staleness only matters for a market that is trading right now: at night the TW quote is
+   simply the close, and on a weekend every quote is. */
+function liveQuoteAge(pf){var now=Date.now(),us=usMarketLive(),tw=twMarketLive(now),best=0,need=false,i,x,d,t;
+  for(i=0;i<pf.op.length;i++){x=pf.op[i].s;if(!(isTW(x)?tw:us))continue;need=true;d=S.pr[x];if(!d)continue;t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}
+  return need?(best?Math.round((now-best)/1000):1e9):null}
 function pollDelay(){return usMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
 
 function fetchPrices(silent){
@@ -643,6 +669,26 @@ function fetchPrices(silent){
        alive. A manual tap falls through and takes over. */
     if(silent&&(now-(S.pStart||0))<REFRESH_TIMEOUT_MS+2000)return;
   }else if(silent&&now-S._lastTry<15000)return;
+  /* Automatic polls only ask for what can have changed: TW quotes while TWSE is open (plus
+     one pass after the close), US quotes while the 04:00-20:00 ET window is open (plus one
+     pass after it ends), and nothing from GAS while it is cooling down. A tap on 🔄 still
+     refreshes everything. */
+  var skip={},cool=silent&&gasCooling(),att=S._att||(S._att={}),liveAtt=false;
+  if(silent){
+    /* A market that has closed is fetched once more to pick up its final price, then left
+       alone. If that pass fails, or a symbol cannot be priced at all, it is retried hourly
+       rather than on every poll. For US the final price must come from Yahoo (via GAS):
+       Finnhub only knows the 16:00 close, not the after-hours last trade. */
+    var twEnd=twLastClose(now),usEnd=usLastEnd(now),usLive=usMarketLive(),twLive=twMarketLive(now),usNeed=usLive,any=false,i0,s0,d0,tried;
+    for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;d0=S.pr[s0];
+      if(isTW(s0)){tried=(att[s0]||0)>twEnd&&now-att[s0]<3600000;
+        if(cool||(!twLive&&((d0&&d0.p&&(d0.at||0)>twEnd+60000)||tried)))skip[s0]=1}
+      else if(!usLive&&!((att[s0]||0)>usEnd&&now-att[s0]<3600000)&&(!d0||!d0.p||(d0.src!=="y"&&d0.src!=="y-stale")||(d0.at||0)<usEnd+60000))usNeed=true}
+    for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;if(!isTW(s0)&&!usNeed)skip[s0]=1;if(!skip[s0]){any=true;if(isTW(s0)?twLive:usLive)liveAtt=true}}
+    /* Nothing can have changed. Still record today's snapshot and fill any missing YTD
+       baseline, and a failure from earlier no longer applies to prices that are final. */
+    if(!any){S._lastTry=now;if(!S.lastUp||(S.lastFail&&S.lastFail>S.lastUp))S.lastUp=new Date();snapHistory();fetchYtdQueue(pf);return}
+  }
   var gen=++S.pGen;
   S.pBusy=true;S.pStart=now;S._lastTry=now;
   if(!silent){S.pLoading=true;render()}
@@ -652,7 +698,7 @@ function fetchPrices(silent){
     if(!alive())return;
     if(S._pw){clearTimeout(S._pw);S._pw=null}
     S.pBusy=false;S.pLoading=false;
-    if(ok){S.lastUp=new Date();S.lastFail=null}else{S.lastFail=new Date()}
+    if(ok){S.lastUp=new Date();S.lastFail=null}else if(!silent||liveAtt){S.lastFail=new Date()}
     sv(PK,S.pr);snapHistory();
     if(!silent)toast(ok?("\u5df2\u66f4\u65b0 "+ok+" \u6a94\u5831\u50f9"+(stale?"\uff08"+stale+" \u6a94\u70ba\u5ef6\u9072\u5831\u50f9\uff09":" \u2713")):(msg||"\u66f4\u65b0\u5931\u6557\uff1a\u5831\u50f9\u4f86\u6e90\u6c92\u6709\u56de\u61c9"));
     render(true);
@@ -662,16 +708,17 @@ function fetchPrices(silent){
      the next tap works. Nothing may hold the lock longer than this. */
   S._pw=setTimeout(function(){finish(0,0,"\u66f4\u65b0\u903e\u6642\uff0c\u8acb\u518d\u8a66\u4e00\u6b21")},REFRESH_TIMEOUT_MS);
 
-  var usSyms=[];for(var ui=0;ui<pf.op.length;ui++){if(!isTW(pf.op[ui].s))usSyms.push(pf.op[ui].s)}
+  var usSyms=[];for(var ui=0;ui<pf.op.length;ui++){if(!isTW(pf.op[ui].s)&&!skip[pf.op[ui].s])usSyms.push(pf.op[ui].s)}
+  if(!cool)for(ui=0;ui<usSyms.length;ui++)att[usSyms[ui]]=now;
   function nowSec(){return Math.floor(Date.now()/1000)}
 
   /* Rate and quotes are independent, so they run together instead of one after the other.
      Neither ever rejects (both swallow their own errors), so Promise.all can't short out. */
-  Promise.all([fetchRate(),batchQuotes(usSyms)]).then(function(res){
+  Promise.all([fetchRate(),cool?Promise.resolve({}):batchQuotes(usSyms)]).then(function(res){
     if(!alive())return null;
     var bq=res[1]||{},np={};for(var k in S.pr)np[k]=S.pr[k];
     var miss=[],ok=0,stale=0;
-    for(var i=0;i<pf.op.length;i++){var pos=pf.op[i],b=bq[pos.s];
+    for(var i=0;i<pf.op.length;i++){var pos=pf.op[i],b=bq[pos.s];if(skip[pos.s])continue;
       /* A quote is only usable if it is genuinely recent. While a session is live,
          anything older than 5 minutes is stale data dressed up as a price. */
       var live=b&&b.sess&&b.sess!=="closed";
@@ -683,13 +730,19 @@ function fetchPrices(silent){
        point where the user had given up and tapped again. */
     var jobs=[];
     for(var m=0;m<miss.length;m++){(function(mi){
+      /* The batch call just failed and started a cooldown: don't follow it with TW calls. */
+      if(silent&&isTW(mi.pos.s)&&gasCooling())return;
+      att[mi.pos.s]=Date.now();
       jobs.push(fetchOne(mi.pos.s).then(function(r){
         /* Take whichever price is actually newer. Outside the regular session Finnhub only
            knows the last close, so a Yahoo pre/post-market print that is a few minutes old is
            still far fresher -- the old order replaced it with a 13-hour-old close. And a
            Finnhub price never inherits Yahoo's 盤前/盤後 label, which it does not belong to. */
-        var yb=(mi.b&&mi.b.p>0)?mi.b:null;
-        if(r&&r.p&&(!yb||(r.t||0)>=(yb.ts||0))){np[mi.pos.s]={p:r.p,pc:r.pc||(yb?yb.prev:null),rp:yb?yb.rp:null,sess:(yb&&yb.sess==="regular")?"regular":null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
+        var yb=(mi.b&&mi.b.p>0)?mi.b:null,ex=np[mi.pos.s];
+        /* No Yahoo quote this time (GAS down or cooling): Finnhub then only has the last
+           regular close, so a pre/after-hours price we already hold stays if it is newer. */
+        if(r&&r.p&&!yb&&!isTW(mi.pos.s)&&ex&&ex.p&&ex.qt&&ex.qt>(r.t||0)){ok++}
+        else if(r&&r.p&&(!yb||(r.t||0)>=(yb.ts||0))){np[mi.pos.s]={p:r.p,pc:r.pc||(yb?yb.prev:null),rp:yb?yb.rp:null,sess:(yb&&yb.sess==="regular")?"regular":null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
         else if(mi.b&&mi.b.p>0){np[mi.pos.s]={p:mi.b.p,pc:mi.b.prev||null,rp:mi.b.rp||null,sess:mi.b.sess||null,qt:mi.b.ts||null,at:Date.now(),src:"y-stale"};ok++;stale++}
       }))})(miss[m])}
     return Promise.all(jobs).then(function(){
@@ -704,7 +757,7 @@ function fetchPrices(silent){
    single refresh held the lock for the best part of a minute. The 重試 link in the
    holdings row clears the flag when the user wants another go. */
 function fetchYtdQueue(pf){
-  if(S.ytdBusy)return;
+  if(S.ytdBusy||gasCooling())return;
   var todo=[];
   for(var i=0;i<pf.op.length;i++){var x=pf.op[i];
     if(S.ytd[x.s]&&S.ytd[x.s]>0)continue;
@@ -715,7 +768,7 @@ function fetchYtdQueue(pf){
   var chain=Promise.resolve();
   for(var j=0;j<todo.length;j++){(function(x){
     S.ytdTried[x.s]=1;
-    chain=chain.then(function(){return fetchYtdBaseline(x.s,x.cur)})
+    chain=chain.then(function(){if(gasCooling()){delete S.ytdTried[x.s];return null}return fetchYtdBaseline(x.s,x.cur)})
                .then(function(){render(true);return new Promise(function(re){setTimeout(re,250)})})
   })(todo[j])}
   chain.then(function(){S.ytdBusy=false;render(true)},function(){S.ytdBusy=false;render(true)})
@@ -985,19 +1038,29 @@ function devInfo(){try{var pr=document.createElement("div");pr.style.cssText="po
   var sa=!!(navigator.standalone||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches));
   return"螢幕 "+screen.width+"×"+screen.height+" · 視窗 "+window.innerWidth+"×"+window.innerHeight+" · 安全區 上"+tp+"/下"+bt+(sa?" · 主畫面 App":" · 瀏覽器")}catch(e){return""}}
 function gasTail(){var m=String(GS||"").match(/\/s\/([^\/]+)\//);var id=m?m[1]:String(GS||"");return id?("…"+id.slice(-6)):"未設定"}
-/* One tap checks the three things sync and prices depend on, each on its own, so a failure
-   says exactly which link is broken: reaching the script, its Yahoo quotes, reading the sheet. */
+/* One tap checks, in order, everything sync and prices depend on, so a failure names the
+   broken link: this device's own internet (a non-Google site), reaching the script, its
+   Yahoo quotes, reading the sheet. Once the script itself cannot be reached the later steps
+   are skipped, rather than adding more requests to a script that is already stuck. */
 function runGasDiag(){
   if(!GS){toast("請先設定 Google Apps Script URL");return}
-  if(S.diagBusy)return;S.diagBusy=true;S.diag=[];render();
-  var res=[],sym=null,pf=calc(),i,dead=false;for(i=0;i<pf.op.length;i++){if(!isTW(pf.op[i].s)){sym=pf.op[i].s;break}}sym=sym||"SPY";
-  function step(name,url,ms,fmt){var t0=Date.now();
-    if(dead){res.push({n:name,ok:false,skip:true});S.diag=res.slice();render();return Promise.resolve()}
-    return gasFetch(url,{cache:"no-store"},ms).then(function(d){var o=fmt(d,((Date.now()-t0)/1000).toFixed(1));res.push({n:name,ok:o.ok,m:o.m});S.diag=res.slice();render()},
-      function(e){if(e&&CONN_KINDS[e.kind])dead=true;res.push({n:name,ok:false,kind:(e&&e.kind)||null,m:(e&&e.message)||"失敗"});S.diag=res.slice();render()})}
-  step("連到 Apps Script",GS+"?action=ping&_t="+Date.now(),15000,function(d,sec){
+  if(S.diagBusy)return;S.diagBusy=true;S.diag=[];S.diagAt=Date.now();render();
+  var res=[],sym=null,pf=calc(),i,dead=null,t0=Date.now();for(i=0;i<pf.op.length;i++){if(!isTW(pf.op[i].s)){sym=pf.op[i].s;break}}sym=sym||"SPY";
+  function push(o){res.push(o);S.diag=res.slice();render()}
+  function secs(t){return((Date.now()-t)/1000).toFixed(1)}
+  function step(name,url,ms,fmt,isPing){var t1=Date.now();
+    if(dead){push({n:name,ok:false,skip:true,why:dead});return Promise.resolve()}
+    return gasFetch(url,{cache:"no-store"},ms).then(function(d){var o=fmt(d,secs(t1));if(o.ok&&isPing)gasOkNow();push({n:name,ok:o.ok,m:o.m,ping:!!isPing})},
+      function(e){var k=(e&&e.kind)||null;if(isPing||CONN_KINDS[k])dead="同上";
+        push({n:name,ok:false,kind:k,ping:!!isPing,m:(isPing&&k==="timeout")?("連 ping（什麼都不做、只回 pong）都 "+secs(t1)+" 秒沒回應，這台網路卻正常 → 多半是 Google 那邊這個 Apps Script 卡住了"):((e&&e.message)||"失敗")})})}
+  /* Two independent non-Google sites, so one of them being down is not mistaken for "no internet". */
+  fetchT("https://open.er-api.com/v6/latest/USD",{cache:"no-store"},8000).then(function(r){return r.json()})
+    .then(null,function(e){if(!FK)throw e;return fetchT("https://finnhub.io/api/v1/quote?symbol=AAPL&token="+FK,{cache:"no-store"},8000).then(function(r){return r.json()})}).then(
+    function(){push({n:"網路（非 Google 網站）",ok:true,m:"正常 · "+secs(t0)+" 秒"})},
+    function(e){dead="這台沒網路";push({n:"網路（非 Google 網站）",ok:false,m:"這台現在連不上網路（"+(e&&e.name==="AbortError"?"逾時":"連線失敗")+"）"})})
+  .then(function(){return step("連到 Apps Script",GS+"?action=ping&_t="+Date.now(),15000,function(d,sec){
       if(!d||!d.ok)return{ok:false,m:"GAS 回 ok:false"};
-      return{ok:true,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}})
+      return{ok:true,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}},true)})
     .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us&_t="+Date.now(),20000,function(d,sec){
       var q=d&&d.ok&&d.q&&d.q[sym];if(!q)return{ok:false,m:sym+" 沒有拿到報價"+(d&&d.e?"："+d.e:"")};
       var age=q.ts?Math.round(Date.now()/1000-q.ts):null;
@@ -1006,23 +1069,32 @@ function runGasDiag(){
       if(!d||!d.ok)return{ok:false,m:(d&&(d.e||d.msg))||"GAS 回 ok:false"};
       var a=parseJ(d.trades,null);return(a instanceof Array)?{ok:true,m:a.length+" 筆交易 · "+sec+" 秒"}:{ok:false,m:"交易資料無法解析"}})})
     .then(function(){S.diagBusy=false;render()},function(){S.diagBusy=false;render()})}
+function hhmm(ms){var d=new Date(ms);return("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)}
 function renderConnCard(){
   var h='<div class="section-label">雲端連線</div><div class="card" style="font-size:12px;line-height:1.7;color:var(--muted)">';
   h+='<div style="display:flex;justify-content:space-between;gap:8px"><span>GAS 網址結尾</span><b style="color:#fff;font-family:ui-monospace,monospace">'+esc(gasTail())+'</b></div>';
   var pf=calc(),ny=0,nf=0,ns=0,i;for(i=0;i<pf.op.length;i++){var d=S.pr[pf.op[i].s];if(!d||isTW(pf.op[i].s))continue;if(d.src==="fh")nf++;else if(d.src==="y-stale")ns++;else ny++}
   h+='<div style="display:flex;justify-content:space-between;gap:8px"><span>美股報價來源</span><span style="text-align:right">Yahoo（經 GAS）'+ny+' · Finnhub '+nf+(ns?' · 較舊的 Yahoo '+ns:'')+'</span></div>';
+  if(gasCooling())h+='<div style="display:flex;justify-content:space-between;gap:8px"><span style="flex-shrink:0">GAS 暫停呼叫</span><span style="text-align:right;color:var(--amber)">到 '+hhmm(S._gasCoolUntil)+'（剛才沒回應，美股先用 Finnhub）</span></div>';
   if(S.syncErr)h+='<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--amber-soft);color:var(--amber);line-height:1.55">上次同步失敗（'+new Date(S.syncErr.at).toLocaleTimeString("zh-TW")+'）<br>'+esc(S.syncErr.msg)+'</div>';
-  var connBad=!!(S.syncErr&&CONN_KINDS[S.syncErr.kind]);
+  /* Which advice fits: "stuck" when the script is reachable in principle but not answering,
+     "conn" when the request cannot get through at all. A connection test, when run, is
+     newer evidence than the last sync error, so it decides. */
+  var help=null,dh=null;
+  if(S.syncErr)help=CONN_KINDS[S.syncErr.kind]?"conn":S.syncErr.kind==="timeout"?"stuck":null;
   if(S.diag&&S.diag.length){for(i=0;i<S.diag.length;i++){var r=S.diag[i],st;
     if(r.ok)st='<span style="color:var(--up);text-align:right">✓ '+esc(r.m)+'</span>';
-    else if(r.skip)st='<span style="color:var(--dim)">– 略過（同上）</span>';
+    else if(r.skip)st='<span style="color:var(--dim)">– 略過（'+esc(r.why||"同上")+'）</span>';
     else st='<span style="color:var(--down);text-align:right">✕ '+esc(r.kind&&SYNC_SHORT[r.kind]?SYNC_SHORT[r.kind]:r.m)+'</span>';
     h+='<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px"><span style="flex-shrink:0">'+r.n+'</span>'+st+'</div>';
     if(!r.ok&&!r.skip&&r.kind&&!(S.syncErr&&S.syncErr.msg===r.m))h+='<div style="font-size:11px;color:var(--down);line-height:1.5;margin-top:2px">'+esc(r.m)+'</div>';
-    if(!r.ok&&r.kind&&CONN_KINDS[r.kind])connBad=true}}
+    if(!r.ok&&!r.skip&&r.kind){if(CONN_KINDS[r.kind])dh="conn";else if(r.ping&&r.kind==="timeout")dh="stuck"}}
+    if(!S.syncErr||(S.diagAt||0)>=S.syncErr.at)help=dh}
+  var pingA=GS?'<a href="'+esc(GS+"?action=ping")+'" target="_blank" rel="noopener" style="color:var(--blue)">在新分頁打開 ping 測試 ↗</a>':'';
+  if(help==="stuck")h+='<div style="margin-top:10px;padding:9px 11px;border-radius:10px;background:var(--blue-soft);color:var(--text);font-size:11px;line-height:1.65"><b>Apps Script 塞住時這樣處理</b><br>① 關掉每台裝置、每個分頁上的 Portfolio，等 10 分鐘，讓 Google 那邊卡住的請求跑完<br>② 只開一台，回到這頁按「測試連線」<br>③ 還是逾時 → 打開 Apps Script 專案左側的「執行項目」，截圖回報<br>'+pingA+'（很快出現 {"ok":true…} 就是恢復了）</div>';
   /* The one check that separates "this URL is dead" from "something on this computer blocks
      it": open the same address as a normal page, where no CORS rule or fetch is involved. */
-  if(connBad&&GS)h+='<div style="margin-top:10px;font-size:11px;line-height:1.6"><a href="'+esc(GS+"?action=ping")+'" target="_blank" rel="noopener" style="color:var(--blue)">在新分頁打開 ping 測試 ↗</a><br>看到 {"ok":true,"msg":"pong"…} → 網址正常，是這台的擴充功能或網路擋住 app 連線<br>看到 Google 錯誤頁或登入頁 → 這個網址已失效，或存取權不是「任何人」<br>完全打不開 → 網路或防火牆擋住 Google</div>';
+  if(help==="conn")h+='<div style="margin-top:10px;font-size:11px;line-height:1.6">'+pingA+'<br>看到 {"ok":true,"msg":"pong"…} → 網址正常，是這台的擴充功能或網路擋住 app 連線<br>看到 Google 錯誤頁或登入頁 → 這個網址已失效，或存取權不是「任何人」<br>完全打不開 → 網路或防火牆擋住 Google</div>';
   h+='<button class="bs" style="width:100%;margin-top:10px;padding:9px;font-size:12px" onclick="runGasDiag()">'+(S.diagBusy?"⏳ 測試中…":"🔌 測試連線")+'</button>';
   h+='<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.55">手機和電腦的「GAS 網址結尾」要一樣，不一樣就是兩台連到不同的 Apps Script（到 ⋯ → API 設定 改成同一個網址）。</div>';
   return h+'</div>'}
@@ -1482,8 +1554,8 @@ function render(passive){try{
      empty, which is why a broken feed looked identical to a working one. */
   if(S.pLoading)h+='<span class="dot"></span>更新中...';
   else if(S.lastFail&&(!S.lastUp||S.lastFail>S.lastUp))h+='<span class="dot" style="background:var(--down);box-shadow:0 0 6px var(--down)"></span><span style="color:var(--down);font-weight:700">報價更新失敗</span>';
-  else if(S.lastUp){var qAge=quoteAge(),qWarn=(qAge!=null&&qAge>420);
-    h+='<span class="dot"'+(qWarn?' style="background:var(--amber);box-shadow:0 0 6px var(--amber)"':'')+'></span>'+(qWarn?'<span style="cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">':'<span>')+'報價 '+(qAge!=null?ageLabel(qAge):timeAgo(S.lastUp))+(qWarn?' \u26a0 ›':'')+'</span>';}
+  else if(S.lastUp){var qAge=quoteAge(),lqa=liveQuoteAge(pf),qWarn=(lqa!=null&&lqa>420);
+    h+='<span class="dot"'+(qWarn?' style="background:var(--amber);box-shadow:0 0 6px var(--amber)"':'')+'></span>'+(qWarn?'<span style="cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">':'<span>')+'報價 '+(lqa!=null?(lqa>=1e9?"—":ageLabel(lqa)):qAge!=null?ageLabel(qAge):timeAgo(S.lastUp))+(qWarn?' \u26a0 ›':'')+'</span>';}
   var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!sv2||!sv2.at)continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
   if(curSess){var scol=curSess==="regular"?"var(--up)":curSess==="pre"?"var(--blue)":curSess==="post"?"var(--purple)":"var(--amber)";
     h+=' · <span style="color:'+scol+';font-weight:700">'+sessName(curSess)+'</span>'}
@@ -1735,14 +1807,17 @@ setTimeout(function(){fetchPrices(true)},2000);
 /* Adaptive polling. The old fixed 30-minute interval could not show a live price by
    construction: poll every minute while a US session is open, back off to 5 minutes
    once everything is closed. */
-function schedulePoll(){if(S._pt)clearTimeout(S._pt);S._pt=setTimeout(function(){fetchPrices(true);schedulePoll()},pollDelay())}
+function schedulePoll(){if(S._pt)clearTimeout(S._pt);S._pt=setTimeout(function(){if(!document.hidden)fetchPrices(true);schedulePoll()},pollDelay())}
 schedulePoll();
 /* Background tabs and installed PWAs get their timers frozen by the OS, so returning to
    the app used to show whatever was cached before it was backgrounded, with nothing to
    trigger a refresh on wake. */
 /* Coming back to the app also pulls what other devices changed; leaving it pushes anything
    still waiting in the 4-second debounce, because iOS freezes the timer once we are hidden. */
-function maybeSync(){if(!cfgOk()||S.syncing)return;if(S.lastSync&&Date.now()-S.lastSync<30000)return;syncNow({silent:true})}
+/* While a retry is already scheduled, returning to the window does not fire another one:
+   on a desktop every focus change used to send a fresh read+write to a script that was
+   already not answering. */
+function maybeSync(){if(!cfgOk()||S.syncing)return;if(S._syRT&&Date.now()<(S._syRTat||0)+5000)return;if(S.lastSync&&Date.now()-S.lastSync<30000)return;syncNow({silent:true})}
 function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
   var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync()}
