@@ -172,7 +172,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.1";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v9.2";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v11";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -182,6 +182,7 @@ var BATCH_TIMEOUT_MS=15000;    /* 批次報價（GAS）*/
 var RATE_TIMEOUT_MS=8000;      /* 匯率 */
 var REFRESH_TIMEOUT_MS=28000;  /* 整次更新的保險絲 */
 var CLOUD_TIMEOUT_MS=20000;    /* 雲端上傳/下載 */
+var SYNC_POST_TIMEOUT_MS=40000;/* 寫入：GAS 端最多會為了鎖等 25 秒，前端要等得比它久 */
 var POLL_LIVE_MS=60000;        /* 盤中自動更新間隔 */
 var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
 
@@ -397,33 +398,63 @@ function applyMerged(M){
   var pr=M.pr||{};for(k in pr){var loc=S.pr[k],rm=pr[k];if(!rm)continue;if(!loc||!loc.at||!rm.at||rm.at>loc.at)S.pr[k]=rm}sv(PK,S.pr);
   if(M.hist&&M.hist.length)sv(HK,M.hist);
   return{add:add,upd:upd,rem:rem,n:nt.length}}
+/* Every Apps Script call made by sync and by the connection test goes through gasFetch, so
+   a failure always carries a kind and a reason a person can act on -- instead of a bare
+   "Failed to fetch" or a JSON parse error that says nothing about what to check. */
+function gasErr(kind,msg){var e=new Error(msg);e.kind=kind;return e}
+function gasFetch(url,opts,ms){
+  return fetchT(url,opts,ms).then(function(r){
+    return r.text().then(function(txt){
+      var t=String(txt||"").replace(/^\s+/,"");
+      if(r.status&&(r.status<200||r.status>=300))throw gasErr("http","Google 回應 HTTP "+r.status+(r.status===404?"：找不到這個部署（網址可能錯了，或部署已被封存）":""));
+      if(t.charAt(0)==="<")throw gasErr("html","GAS 回傳的是網頁而不是資料：網址可能錯誤、部署已被封存，或存取權不是「任何人」");
+      try{return JSON.parse(t)}catch(e){throw gasErr("parse","GAS 回應格式錯誤（不是 JSON）")}
+    },function(){throw gasErr("network","下載 GAS 回應時連線中斷")})
+  },function(e){
+    if(e&&e.kind)throw e;
+    if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Apps Script 冷啟動或網路很慢）");
+    throw gasErr("network","連不到 Google Apps Script（網路斷線、防火牆或擴充功能擋住 script.google.com，或這台的 GAS 網址已失效）")})}
+var CONN_KINDS={network:1,html:1,http:1};
+var SYNC_SHORT={busy:"雲端忙碌中",network:"連不到 Google",timeout:"Google 逾時",html:"GAS 網址或權限有誤",http:"GAS 網址有誤",parse:"GAS 回應異常",gas:"GAS 執行錯誤",data:"雲端資料異常",bug:"同步程式錯誤"};
 function syncNow(opts){
   var silent=!!(opts&&opts.silent);
   if(!GS){if(!silent)toast("請先設定 Google Apps Script URL");return}
   if(S.syncing)return;
+  if(S._syRT){clearTimeout(S._syRT);S._syRT=null}
   S.syncing=true;S.menu=false;if(!silent)render();
   var local={tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])},serverMerged=false;
-  fetchT(GS+"?action=read&_t="+Date.now(),{cache:"no-store"},CLOUD_TIMEOUT_MS).then(function(r){return r.json()}).then(function(d){
+  gasFetch(GS+"?action=read&_t="+Date.now(),{cache:"no-store"},CLOUD_TIMEOUT_MS).then(function(d){
     var remote={tr:[],del:{},pr:{},hist:[]};
     if(d&&d.ok){
       var rt=parseJ(d.trades,[]);
-      if(rt===null||!(rt instanceof Array))throw new Error("雲端交易資料無法解析，已中止以免覆蓋");
+      if(rt===null||!(rt instanceof Array))throw gasErr("data","雲端交易資料無法解析，已中止以免覆蓋");
       remote={tr:cleanTr(rt),del:parseJ(d.del,{})||{},pr:parseJ(d.prices,{})||{},hist:parseJ(d.history,[])||[]};
-    }else if(!(d&&(d.msg==="no sheet"||d.empty)))throw new Error((d&&(d.e||d.msg))||"讀取雲端失敗");
+    }else if(!(d&&(d.msg==="no sheet"||d.empty)))throw gasErr("gas","讀取雲端失敗："+((d&&(d.e||d.msg))||"GAS 回 ok:false"));
     var M=mergeCore(remote,local);
-    return fetchT(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(M.tr),prices:JSON.stringify(M.pr),history:JSON.stringify(M.hist),del:JSON.stringify(M.del),app:APP_VER})},CLOUD_TIMEOUT_MS)
-      .then(function(r){return r.json()}).then(function(w){
-        if(!w||!w.ok)throw new Error((w&&w.e)||"雲端寫入失敗");
+    return gasFetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(M.tr),prices:JSON.stringify(M.pr),history:JSON.stringify(M.hist),del:JSON.stringify(M.del),app:APP_VER})},SYNC_POST_TIMEOUT_MS)
+      .then(function(w){
+        if(!w||!w.ok)throw gasErr((w&&/忙碌/.test(w.e||""))?"busy":"gas","寫入雲端失敗："+((w&&w.e)||"GAS 回 ok:false"));
         if(w.merged&&w.trades){var wt=parseJ(w.trades,null);if(wt instanceof Array){serverMerged=true;M={tr:wt,del:parseJ(w.del,M.del)||M.del,pr:parseJ(w.prices,M.pr)||M.pr,hist:parseJ(w.history,M.hist)||M.hist}}}
         return M})
   }).then(function(M){
     var c=applyMerged(M);
-    S.syncing=false;S.synced=true;S.syncErr=null;S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
+    S.syncing=false;S.synced=true;S.syncErr=null;S._syFail=0;S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
     var parts=[];if(c.add)parts.push("新增 "+c.add);if(c.upd)parts.push("更新 "+c.upd);if(c.rem)parts.push("移除 "+c.rem);
     var msg="☁️ 已同步 · 共 "+c.n+" 筆"+(parts.length?"（"+parts.join("、")+"）":"");
     if(!serverMerged)msg+=" · ⚠ GAS 未更新到 "+GAS_VER;
     if(!silent||parts.length||!serverMerged)toast(msg);else render(true);
-  }).catch(function(e){S.syncing=false;S.syncErr=(e&&e.message)||"連線失敗";if(!silent)toast("同步失敗："+S.syncErr);render(true)});
+  }).catch(function(e){
+    S.syncing=false;
+    var kind=(e&&e.kind)||"bug",msg=(e&&e.kind)?e.message:("程式錯誤："+((e&&e.message)||e));
+    S._syFail=(S._syFail||0)+1;
+    var transient=(kind==="network"||kind==="timeout"||kind==="busy");
+    /* A phone that has just woken up, or a Wi-Fi handover, fails the first call now and then.
+       A single background miss of that kind retries quietly; the banner only appears when it
+       keeps failing, or straight away for anything a retry cannot fix (bad URL, GAS error). */
+    if(silent&&transient&&S._syFail<2)S.syncErr=null;else S.syncErr={kind:kind,msg:msg,at:Date.now()};
+    if(transient&&cfgOk()){var dl=[20000,60000,300000][Math.min(S._syFail-1,2)];S._syRT=setTimeout(function(){S._syRT=null;syncNow({silent:true})},dl)}
+    if(!silent)toast("同步失敗："+msg);
+    render(true)});
 }
 function cloudSave(){syncNow()}
 function cloudLoad(){syncNow()}
@@ -653,7 +684,12 @@ function fetchPrices(silent){
     var jobs=[];
     for(var m=0;m<miss.length;m++){(function(mi){
       jobs.push(fetchOne(mi.pos.s).then(function(r){
-        if(r&&r.p){np[mi.pos.s]={p:r.p,pc:r.pc||(mi.b?mi.b.prev:null),rp:mi.b?mi.b.rp:null,sess:mi.b?mi.b.sess:null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
+        /* Take whichever price is actually newer. Outside the regular session Finnhub only
+           knows the last close, so a Yahoo pre/post-market print that is a few minutes old is
+           still far fresher -- the old order replaced it with a 13-hour-old close. And a
+           Finnhub price never inherits Yahoo's 盤前/盤後 label, which it does not belong to. */
+        var yb=(mi.b&&mi.b.p>0)?mi.b:null;
+        if(r&&r.p&&(!yb||(r.t||0)>=(yb.ts||0))){np[mi.pos.s]={p:r.p,pc:r.pc||(yb?yb.prev:null),rp:yb?yb.rp:null,sess:(yb&&yb.sess==="regular")?"regular":null,qt:r.t||nowSec(),at:Date.now(),src:"fh"};ok++}
         else if(mi.b&&mi.b.p>0){np[mi.pos.s]={p:mi.b.p,pc:mi.b.prev||null,rp:mi.b.rp||null,sess:mi.b.sess||null,qt:mi.b.ts||null,at:Date.now(),src:"y-stale"};ok++;stale++}
       }))})(miss[m])}
     return Promise.all(jobs).then(function(){
@@ -948,6 +984,48 @@ function devInfo(){try{var pr=document.createElement("div");pr.style.cssText="po
   document.body.appendChild(pr);var cs=getComputedStyle(pr),tp=parseInt(cs.paddingTop,10)||0,bt=parseInt(cs.paddingBottom,10)||0;document.body.removeChild(pr);
   var sa=!!(navigator.standalone||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches));
   return"螢幕 "+screen.width+"×"+screen.height+" · 視窗 "+window.innerWidth+"×"+window.innerHeight+" · 安全區 上"+tp+"/下"+bt+(sa?" · 主畫面 App":" · 瀏覽器")}catch(e){return""}}
+function gasTail(){var m=String(GS||"").match(/\/s\/([^\/]+)\//);var id=m?m[1]:String(GS||"");return id?("…"+id.slice(-6)):"未設定"}
+/* One tap checks the three things sync and prices depend on, each on its own, so a failure
+   says exactly which link is broken: reaching the script, its Yahoo quotes, reading the sheet. */
+function runGasDiag(){
+  if(!GS){toast("請先設定 Google Apps Script URL");return}
+  if(S.diagBusy)return;S.diagBusy=true;S.diag=[];render();
+  var res=[],sym=null,pf=calc(),i,dead=false;for(i=0;i<pf.op.length;i++){if(!isTW(pf.op[i].s)){sym=pf.op[i].s;break}}sym=sym||"SPY";
+  function step(name,url,ms,fmt){var t0=Date.now();
+    if(dead){res.push({n:name,ok:false,skip:true});S.diag=res.slice();render();return Promise.resolve()}
+    return gasFetch(url,{cache:"no-store"},ms).then(function(d){var o=fmt(d,((Date.now()-t0)/1000).toFixed(1));res.push({n:name,ok:o.ok,m:o.m});S.diag=res.slice();render()},
+      function(e){if(e&&CONN_KINDS[e.kind])dead=true;res.push({n:name,ok:false,kind:(e&&e.kind)||null,m:(e&&e.message)||"失敗"});S.diag=res.slice();render()})}
+  step("連到 Apps Script",GS+"?action=ping&_t="+Date.now(),15000,function(d,sec){
+      if(!d||!d.ok)return{ok:false,m:"GAS 回 ok:false"};
+      return{ok:true,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}})
+    .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us&_t="+Date.now(),20000,function(d,sec){
+      var q=d&&d.ok&&d.q&&d.q[sym];if(!q)return{ok:false,m:sym+" 沒有拿到報價"+(d&&d.e?"："+d.e:"")};
+      var age=q.ts?Math.round(Date.now()/1000-q.ts):null;
+      return{ok:true,m:sym+" $"+fm(q.p)+(sessName(q.sess)?" "+sessName(q.sess):"")+(age!=null?" · "+ageLabel(age):"")+" · "+sec+" 秒"}})})
+    .then(function(){return step("讀取雲端資料",GS+"?action=read&_t="+Date.now(),20000,function(d,sec){
+      if(!d||!d.ok)return{ok:false,m:(d&&(d.e||d.msg))||"GAS 回 ok:false"};
+      var a=parseJ(d.trades,null);return(a instanceof Array)?{ok:true,m:a.length+" 筆交易 · "+sec+" 秒"}:{ok:false,m:"交易資料無法解析"}})})
+    .then(function(){S.diagBusy=false;render()},function(){S.diagBusy=false;render()})}
+function renderConnCard(){
+  var h='<div class="section-label">雲端連線</div><div class="card" style="font-size:12px;line-height:1.7;color:var(--muted)">';
+  h+='<div style="display:flex;justify-content:space-between;gap:8px"><span>GAS 網址結尾</span><b style="color:#fff;font-family:ui-monospace,monospace">'+esc(gasTail())+'</b></div>';
+  var pf=calc(),ny=0,nf=0,ns=0,i;for(i=0;i<pf.op.length;i++){var d=S.pr[pf.op[i].s];if(!d||isTW(pf.op[i].s))continue;if(d.src==="fh")nf++;else if(d.src==="y-stale")ns++;else ny++}
+  h+='<div style="display:flex;justify-content:space-between;gap:8px"><span>美股報價來源</span><span style="text-align:right">Yahoo（經 GAS）'+ny+' · Finnhub '+nf+(ns?' · 較舊的 Yahoo '+ns:'')+'</span></div>';
+  if(S.syncErr)h+='<div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--amber-soft);color:var(--amber);line-height:1.55">上次同步失敗（'+new Date(S.syncErr.at).toLocaleTimeString("zh-TW")+'）<br>'+esc(S.syncErr.msg)+'</div>';
+  var connBad=!!(S.syncErr&&CONN_KINDS[S.syncErr.kind]);
+  if(S.diag&&S.diag.length){for(i=0;i<S.diag.length;i++){var r=S.diag[i],st;
+    if(r.ok)st='<span style="color:var(--up);text-align:right">✓ '+esc(r.m)+'</span>';
+    else if(r.skip)st='<span style="color:var(--dim)">– 略過（同上）</span>';
+    else st='<span style="color:var(--down);text-align:right">✕ '+esc(r.kind&&SYNC_SHORT[r.kind]?SYNC_SHORT[r.kind]:r.m)+'</span>';
+    h+='<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px"><span style="flex-shrink:0">'+r.n+'</span>'+st+'</div>';
+    if(!r.ok&&!r.skip&&r.kind&&!(S.syncErr&&S.syncErr.msg===r.m))h+='<div style="font-size:11px;color:var(--down);line-height:1.5;margin-top:2px">'+esc(r.m)+'</div>';
+    if(!r.ok&&r.kind&&CONN_KINDS[r.kind])connBad=true}}
+  /* The one check that separates "this URL is dead" from "something on this computer blocks
+     it": open the same address as a normal page, where no CORS rule or fetch is involved. */
+  if(connBad&&GS)h+='<div style="margin-top:10px;font-size:11px;line-height:1.6"><a href="'+esc(GS+"?action=ping")+'" target="_blank" rel="noopener" style="color:var(--blue)">在新分頁打開 ping 測試 ↗</a><br>看到 {"ok":true,"msg":"pong"…} → 網址正常，是這台的擴充功能或網路擋住 app 連線<br>看到 Google 錯誤頁或登入頁 → 這個網址已失效，或存取權不是「任何人」<br>完全打不開 → 網路或防火牆擋住 Google</div>';
+  h+='<button class="bs" style="width:100%;margin-top:10px;padding:9px;font-size:12px" onclick="runGasDiag()">'+(S.diagBusy?"⏳ 測試中…":"🔌 測試連線")+'</button>';
+  h+='<div style="font-size:10px;color:var(--dim);margin-top:8px;line-height:1.55">手機和電腦的「GAS 網址結尾」要一樣，不一樣就是兩台連到不同的 Apps Script（到 ⋯ → API 設定 改成同一個網址）。</div>';
+  return h+'</div>'}
 function renderHealth(){
   var R=healthReport(),h="",i,nErr=0,nWarn=0;
   for(i=0;i<R.iss.length;i++){if(R.iss[i].lv===0)nErr++;else if(R.iss[i].lv===1)nWarn++}
@@ -957,6 +1035,7 @@ function renderHealth(){
   h+='<div class="card" style="border-left:3px solid '+bc+';margin-bottom:12px"><div style="font-size:16px;font-weight:700;color:'+bc+';margin-bottom:6px">'+(ok?"✓ 帳目一致":(nErr?nErr+" 個錯誤":"")+(nErr&&nWarn?" · ":"")+(nWarn?nWarn+" 個提醒":""))+'</div>';
   h+='<div style="font-size:12px;color:var(--muted);line-height:1.7">本機 '+R.n+' 筆交易 · '+R.list.length+' 檔個股 · 刪除紀錄 '+nDel+' 筆<br>'+(ls?"上次雲端同步 "+new Date(ls).toLocaleString("zh-TW"):"尚未用新版同步過")+'</div>';
   h+='<button class="bp" style="width:100%;margin-top:12px;padding:10px" onclick="syncNow()">'+(S.syncing?"⏳ 同步中…":"⇅ 立即雲端同步（合併）")+'</button></div>';
+  h+=renderConnCard();
   if(R.iss.length){h+='<div class="section-label">需要注意</div>';
     for(i=0;i<R.iss.length;i++){var it=R.iss[i],col=it.lv===0?"var(--down)":it.lv===1?"var(--amber)":"var(--muted)",ic=it.lv===0?"✕":it.lv===1?"⚠":"ⓘ";
       h+='<div class="card" style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;cursor:pointer" onclick="S.trF={r:\'all\',s:\''+it.s+'\'};set({v:\'trades\'})"><span style="color:'+col+';font-weight:800;flex-shrink:0">'+ic+'</span><div style="font-size:12px;line-height:1.55;flex:1"><b>'+it.s+'</b> '+it.msg;
@@ -1404,11 +1483,11 @@ function render(passive){try{
   if(S.pLoading)h+='<span class="dot"></span>更新中...';
   else if(S.lastFail&&(!S.lastUp||S.lastFail>S.lastUp))h+='<span class="dot" style="background:var(--down);box-shadow:0 0 6px var(--down)"></span><span style="color:var(--down);font-weight:700">報價更新失敗</span>';
   else if(S.lastUp){var qAge=quoteAge(),qWarn=(qAge!=null&&qAge>420);
-    h+='<span class="dot"'+(qWarn?' style="background:var(--amber);box-shadow:0 0 6px var(--amber)"':'')+'></span>報價 '+(qAge!=null?ageLabel(qAge):timeAgo(S.lastUp))+(qWarn?' \u26a0':'');}
+    h+='<span class="dot"'+(qWarn?' style="background:var(--amber);box-shadow:0 0 6px var(--amber)"':'')+'></span>'+(qWarn?'<span style="cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">':'<span>')+'報價 '+(qAge!=null?ageLabel(qAge):timeAgo(S.lastUp))+(qWarn?' \u26a0 ›':'')+'</span>';}
   var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!sv2||!sv2.at)continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
   if(curSess){var scol=curSess==="regular"?"var(--up)":curSess==="pre"?"var(--blue)":curSess==="post"?"var(--purple)":"var(--amber)";
     h+=' · <span style="color:'+scol+';font-weight:700">'+sessName(curSess)+'</span>'}
-  if(S.syncErr)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="syncNow()">☁ 同步失敗，點此重試</span>';
+  if(S.syncErr)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ 未同步：'+(SYNC_SHORT[S.syncErr.kind]||"原因不明")+' ›</span>';
   if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
   h+='</div><div class="scr"><div class="cnt">';
 
@@ -1668,6 +1747,7 @@ function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
   var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync()}
 document.addEventListener("visibilitychange",onWake);
+window.addEventListener("online",function(){S._lastTry=0;fetchPrices(true);if(cfgOk()&&!S.syncing&&(S.syncErr||S._syRT))syncNow({silent:true});else maybeSync()});
 window.addEventListener("focus",onWake);
 window.addEventListener("pageshow",onWake);
 document.addEventListener("focusout",function(){if(S._pend){setTimeout(function(){var ae=document.activeElement;if(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"||ae.tagName==="SELECT"))return;S._pend=false;render(true)},350)}});
