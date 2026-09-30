@@ -172,17 +172,18 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.3";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v9.4";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v11";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
    時間到就強制解鎖，確保按鈕永遠有反應。 */
-var FETCH_TIMEOUT_MS=9000;     /* 單一報價請求 */
-var BATCH_TIMEOUT_MS=15000;    /* 批次報價（GAS）*/
+var FETCH_TIMEOUT_MS=9000;     /* 單一報價請求（Finnhub）*/
+var GAS_TIMEOUT_MS=40000;      /* 經 GAS 的單筆請求（台股、年初基準）：Google 端有時要 30 秒才開始執行 */
+var BATCH_TIMEOUT_MS=40000;    /* 批次報價（GAS）*/
 var RATE_TIMEOUT_MS=8000;      /* 匯率 */
-var REFRESH_TIMEOUT_MS=28000;  /* 整次更新的保險絲 */
-var CLOUD_TIMEOUT_MS=20000;    /* 雲端上傳/下載 */
-var SYNC_POST_TIMEOUT_MS=40000;/* 寫入：GAS 端最多會為了鎖等 25 秒，前端要等得比它久 */
+var REFRESH_TIMEOUT_MS=90000;  /* 整次更新的保險絲（批次＋台股各可能等 40 秒）*/
+var CLOUD_TIMEOUT_MS=45000;    /* 雲端下載 */
+var SYNC_POST_TIMEOUT_MS=70000;/* 寫入：GAS 端最多為了鎖等 25 秒，再加上 Google 端的延遲 */
 var GAS_COOL_MS=[120000,300000,600000];/* GAS 沒回應後，自動更新暫停呼叫它：2 → 5 → 10 分鐘 */
 var POLL_LIVE_MS=60000;        /* 盤中自動更新間隔 */
 var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
@@ -413,7 +414,7 @@ function gasFetch(url,opts,ms){
     },function(){throw gasErr("network","下載 GAS 回應時連線中斷")})
   },function(e){
     if(e&&e.kind)throw e;
-    if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Apps Script 塞住、冷啟動，或網路很慢）");
+    if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Google 端延遲，或網路很慢）");
     throw gasErr("network","連不到 Google Apps Script（網路斷線、防火牆或擴充功能擋住 script.google.com，或這台的 GAS 網址已失效）")})}
 var CONN_KINDS={network:1,html:1,http:1};
 var SYNC_SHORT={busy:"雲端忙碌中",network:"連不到 Google",timeout:"Google 逾時",html:"GAS 網址或權限有誤",http:"GAS 網址有誤",parse:"GAS 回應異常",gas:"GAS 執行錯誤",data:"雲端資料異常",bug:"同步程式錯誤"};
@@ -567,7 +568,7 @@ function gasTrip(){if(gasCooling())return;S._gasFail=(S._gasFail||0)+1;S._gasCoo
 function gasOkNow(){S._gasFail=0;S._gasCoolUntil=0}
 function gasCooling(){return!!(S._gasCoolUntil&&Date.now()<S._gasCoolUntil)}
 function fetchOne(sym){
-  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok)gasOkNow();return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){gasTrip();return null})}
+  if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"},GAS_TIMEOUT_MS).then(function(r){return r.json()}).then(function(d){if(d&&d.ok)gasOkNow();return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){gasTrip();return null})}
   if(!FK)return Promise.resolve(null);
   return fetchT("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
 }
@@ -601,7 +602,7 @@ function fetchYtdBaseline(sym,cur){
   /* Hard timeout: GAS sometimes hangs when external sources don't respond. Abort at 12s
      so the UI doesn't get stuck spinning, and so we can fall through to "retry" affordance. */
   var ctrl=(typeof AbortController!=="undefined")?new AbortController():null;
-  var tid=setTimeout(function(){if(ctrl)ctrl.abort()},12000);
+  var tid=setTimeout(function(){if(ctrl)ctrl.abort()},GAS_TIMEOUT_MS);
   var opts=ctrl?{signal:ctrl.signal,cache:"no-store"}:{cache:"no-store"};
   return fetch(GS+"?action=ytd&sym="+encodeURIComponent(sym)+"&mkt="+mkt+"&year="+year,opts)
     .then(function(r){clearTimeout(tid);return r.json()})
@@ -614,7 +615,7 @@ function fetchYtdBaseline(sym,cur){
       return null;
     }).catch(function(e){
       clearTimeout(tid);gasTrip();
-      if(e&&e.name==="AbortError")S.ytdFailed[sym]="GAS 逾時 12 秒未回應（可能是外部資料源卡住）";
+      if(e&&e.name==="AbortError")S.ytdFailed[sym]="GAS 逾時 "+(GAS_TIMEOUT_MS/1000)+" 秒未回應（Google 端延遲，或外部資料源卡住）";
       else S.ytdFailed[sym]="網路錯誤: "+(e&&e.message||"unknown");
       return null;
     });
@@ -1050,7 +1051,7 @@ function runGasDiag(){
   function secs(t){return((Date.now()-t)/1000).toFixed(1)}
   function step(name,url,ms,fmt,isPing){var t1=Date.now();
     if(dead){push({n:name,ok:false,skip:true,why:dead});return Promise.resolve()}
-    return gasFetch(url,{cache:"no-store"},ms).then(function(d){var o=fmt(d,secs(t1));if(o.ok&&isPing)gasOkNow();push({n:name,ok:o.ok,m:o.m,ping:!!isPing})},
+    return gasFetch(url,{cache:"no-store"},ms).then(function(d){var o=fmt(d,secs(t1));if(o.ok&&isPing)gasOkNow();push({n:name,ok:o.ok,m:o.m,ping:!!isPing,slow:!!o.slow})},
       function(e){var k=(e&&e.kind)||null;if(isPing||CONN_KINDS[k])dead="同上";
         push({n:name,ok:false,kind:k,ping:!!isPing,m:(isPing&&k==="timeout")?("連 ping（什麼都不做、只回 pong）都 "+secs(t1)+" 秒沒回應，這台網路卻正常 → 多半是 Google 那邊這個 Apps Script 卡住了"):((e&&e.message)||"失敗")})})}
   /* Two independent non-Google sites, so one of them being down is not mistaken for "no internet". */
@@ -1058,14 +1059,15 @@ function runGasDiag(){
     .then(null,function(e){if(!FK)throw e;return fetchT("https://finnhub.io/api/v1/quote?symbol=AAPL&token="+FK,{cache:"no-store"},8000).then(function(r){return r.json()})}).then(
     function(){push({n:"網路（非 Google 網站）",ok:true,m:"正常 · "+secs(t0)+" 秒"})},
     function(e){dead="這台沒網路";push({n:"網路（非 Google 網站）",ok:false,m:"這台現在連不上網路（"+(e&&e.name==="AbortError"?"逾時":"連線失敗")+"）"})})
-  .then(function(){return step("連到 Apps Script",GS+"?action=ping&_t="+Date.now(),15000,function(d,sec){
+  .then(function(){return step("連到 Apps Script",GS+"?action=ping&_t="+Date.now(),45000,function(d,sec){
       if(!d||!d.ok)return{ok:false,m:"GAS 回 ok:false"};
-      return{ok:true,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}},true)})
-    .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us&_t="+Date.now(),20000,function(d,sec){
+      var slow=parseFloat(sec)>8;
+      return{ok:true,slow:slow,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(slow?"（很慢，正常 1 秒內）":"")+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}},true)})
+    .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us&_t="+Date.now(),45000,function(d,sec){
       var q=d&&d.ok&&d.q&&d.q[sym];if(!q)return{ok:false,m:sym+" 沒有拿到報價"+(d&&d.e?"："+d.e:"")};
       var age=q.ts?Math.round(Date.now()/1000-q.ts):null;
       return{ok:true,m:sym+" $"+fm(q.p)+(sessName(q.sess)?" "+sessName(q.sess):"")+(age!=null?" · "+ageLabel(age):"")+" · "+sec+" 秒"}})})
-    .then(function(){return step("讀取雲端資料",GS+"?action=read&_t="+Date.now(),20000,function(d,sec){
+    .then(function(){return step("讀取雲端資料",GS+"?action=read&_t="+Date.now(),45000,function(d,sec){
       if(!d||!d.ok)return{ok:false,m:(d&&(d.e||d.msg))||"GAS 回 ok:false"};
       var a=parseJ(d.trades,null);return(a instanceof Array)?{ok:true,m:a.length+" 筆交易 · "+sec+" 秒"}:{ok:false,m:"交易資料無法解析"}})})
     .then(function(){S.diagBusy=false;render()},function(){S.diagBusy=false;render()})}
@@ -1083,15 +1085,17 @@ function renderConnCard(){
   var help=null,dh=null;
   if(S.syncErr)help=CONN_KINDS[S.syncErr.kind]?"conn":S.syncErr.kind==="timeout"?"stuck":null;
   if(S.diag&&S.diag.length){for(i=0;i<S.diag.length;i++){var r=S.diag[i],st;
-    if(r.ok)st='<span style="color:var(--up);text-align:right">✓ '+esc(r.m)+'</span>';
+    if(r.ok)st='<span style="color:'+(r.slow?'var(--amber)':'var(--up)')+';text-align:right">'+(r.slow?'⚠ ':'✓ ')+esc(r.m)+'</span>';
     else if(r.skip)st='<span style="color:var(--dim)">– 略過（'+esc(r.why||"同上")+'）</span>';
     else st='<span style="color:var(--down);text-align:right">✕ '+esc(r.kind&&SYNC_SHORT[r.kind]?SYNC_SHORT[r.kind]:r.m)+'</span>';
     h+='<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px"><span style="flex-shrink:0">'+r.n+'</span>'+st+'</div>';
     if(!r.ok&&!r.skip&&r.kind&&!(S.syncErr&&S.syncErr.msg===r.m))h+='<div style="font-size:11px;color:var(--down);line-height:1.5;margin-top:2px">'+esc(r.m)+'</div>';
-    if(!r.ok&&!r.skip&&r.kind){if(CONN_KINDS[r.kind])dh="conn";else if(r.ping&&r.kind==="timeout")dh="stuck"}}
+    if(!r.ok&&!r.skip&&r.kind){if(CONN_KINDS[r.kind])dh="conn";else if(r.ping&&r.kind==="timeout")dh="stuck"}
+    if(r.ok&&r.slow&&!dh)dh="slow"}
     if(!S.syncErr||(S.diagAt||0)>=S.syncErr.at)help=dh}
   var pingA=GS?'<a href="'+esc(GS+"?action=ping")+'" target="_blank" rel="noopener" style="color:var(--blue)">在新分頁打開 ping 測試 ↗</a>':'';
-  if(help==="stuck")h+='<div style="margin-top:10px;padding:9px 11px;border-radius:10px;background:var(--blue-soft);color:var(--text);font-size:11px;line-height:1.65"><b>Apps Script 塞住時這樣處理</b><br>① 關掉每台裝置、每個分頁上的 Portfolio，等 10 分鐘，讓 Google 那邊卡住的請求跑完<br>② 只開一台，回到這頁按「測試連線」<br>③ 還是逾時 → 打開 Apps Script 專案左側的「執行項目」，截圖回報<br>'+pingA+'（很快出現 {"ok":true…} 就是恢復了）</div>';
+  if(help==="stuck")h+='<div style="margin-top:10px;padding:9px 11px;border-radius:10px;background:var(--blue-soft);color:var(--text);font-size:11px;line-height:1.65"><b>Apps Script 沒有回應</b><br>① 到 script.google.com 左側「我的執行項目」：看 doGet 有沒有出現、各跑了幾秒<br>② '+pingA+'，看要等多久才出現 {"ok":true…}<br>③ 兩個結果截圖回報<br><span style="color:var(--muted)">執行時間都不到 1 秒卻要等很久，就是 Google 那端的延遲，不是 app 或你的網路。</span></div>';
+  if(help==="slow")h+='<div style="margin-top:10px;padding:9px 11px;border-radius:10px;background:var(--amber-soft);color:var(--text);font-size:11px;line-height:1.65"><b>Apps Script 回應很慢</b><br>腳本本身 1 秒內就跑完，時間花在 Google 那端開始執行之前。app 會等它（最多 45 秒），同步和報價只是會慢一點。</div>';
   /* The one check that separates "this URL is dead" from "something on this computer blocks
      it": open the same address as a normal page, where no CORS rule or fetch is involved. */
   if(help==="conn")h+='<div style="margin-top:10px;font-size:11px;line-height:1.6">'+pingA+'<br>看到 {"ok":true,"msg":"pong"…} → 網址正常，是這台的擴充功能或網路擋住 app 連線<br>看到 Google 錯誤頁或登入頁 → 這個網址已失效，或存取權不是「任何人」<br>完全打不開 → 網路或防火牆擋住 Google</div>';
@@ -1559,6 +1563,7 @@ function render(passive){try{
   var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!sv2||!sv2.at)continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
   if(curSess){var scol=curSess==="regular"?"var(--up)":curSess==="pre"?"var(--blue)":curSess==="post"?"var(--purple)":"var(--amber)";
     h+=' · <span style="color:'+scol+';font-weight:700">'+sessName(curSess)+'</span>'}
+  if(S.newVer&&S.newVer!==APP_VER)h+=' · <span style="color:var(--blue);cursor:pointer;font-weight:700" onclick="applyUpdate(true)">⬆ 更新到 '+esc(S.newVer)+'</span>';
   if(S.syncErr)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ 未同步：'+(SYNC_SHORT[S.syncErr.kind]||"原因不明")+' ›</span>';
   if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
   h+='</div><div class="scr"><div class="cnt">';
@@ -1803,6 +1808,9 @@ function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?
 
 render();
 setTimeout(maybeSync,1500);
+/* Just updated? Say so once. Then look for a newer build a few seconds after opening. */
+(function(){var u=ld("pt_upd",null);if(u&&u.v===APP_VER&&!u.done){sv("pt_upd",{v:u.v,at:u.at,done:1});setTimeout(function(){toast("已更新到 "+APP_VER+" ✓")},800)}})();
+setTimeout(function(){checkUpdate(false)},4000);   /* pageshow usually checked already; this covers browsers that don't fire it */
 setTimeout(function(){fetchPrices(true)},2000);
 /* Adaptive polling. The old fixed 30-minute interval could not show a live price by
    construction: poll every minute while a US session is open, back off to 5 minutes
@@ -1818,9 +1826,38 @@ schedulePoll();
    on a desktop every focus change used to send a fresh read+write to a script that was
    already not answering. */
 function maybeSync(){if(!cfgOk()||S.syncing)return;if(S._syRT&&Date.now()<(S._syRTat||0)+5000)return;if(S.lastSync&&Date.now()-S.lastSync<30000)return;syncNow({silent:true})}
+/* v9.4 -- the app updates itself. It downloads its own file from GitHub past the cache and, if
+   the APP_VER inside is different, reloads -- straight away on the overview with nothing being
+   typed, otherwise a "⬆ 更新到 vX" link appears in the status line. So there is no ?v= to edit
+   and no reason to add a second home-screen icon (each icon is a separate app with its own,
+   empty storage -- that is why the API key and GAS URL had to be entered again). */
+var UPD_EVERY_MS=1800000;      /* 最多每 30 分鐘檢查一次新版 */
+function pageUrl(){return String((typeof location!=="undefined"&&location&&location.href)||"").split("#")[0]}
+function busyUI(){if(S.v!=="home"||S.modal||S.menu)return true;var ae=document.activeElement;return!!(ae&&(ae.tagName==="INPUT"||ae.tagName==="TEXTAREA"||ae.tagName==="SELECT"))}
+function checkUpdate(force){
+  var u=pageUrl();if(!/^https?:/.test(u)||document.hidden)return;
+  if(!force&&S._updAt&&Date.now()-S._updAt<UPD_EVERY_MS)return;
+  S._updAt=Date.now();
+  fetchT(u.split("?")[0]+"?_u="+Date.now(),{cache:"no-store"},15000).then(function(r){return r.text()}).then(function(t){
+    /* the pattern is built from pieces so that this line itself can never be the match */
+    var m=String(t||"").match(new RegExp('var APP_'+'VER="(v[0-9][^"]*)"'));if(!m||m[1]===APP_VER)return;
+    S.newVer=m[1];
+    /* Refresh the cached copy under the exact address this page was opened with, so the reload
+       gets the new file rather than the one already in the browser cache. */
+    return fetchT(u,{cache:"reload"},15000).then(null,function(){}).then(function(){applyUpdate(false)})
+  }).then(null,function(){})}
+function applyUpdate(user){
+  if(!S.newVer)return;
+  var last=ld("pt_upd",{})||{};
+  /* Never loop: if this version was already tried in the last 10 minutes and we are still on the
+     old one, the cache has not caught up yet -- leave it to the link. */
+  if(!user&&last.v===S.newVer&&Date.now()-(last.at||0)<600000){render(true);return}
+  if(!user&&busyUI()){render(true);return}
+  sv("pt_upd",{v:S.newVer,at:Date.now(),from:APP_VER});
+  location.reload()}
 function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
-  var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync()}
+  var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync();checkUpdate(false)}
 document.addEventListener("visibilitychange",onWake);
 window.addEventListener("online",function(){S._lastTry=0;fetchPrices(true);if(cfgOk()&&!S.syncing&&(S.syncErr||S._syRT))syncNow({silent:true});else maybeSync()});
 window.addEventListener("focus",onWake);
