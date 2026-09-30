@@ -172,7 +172,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.4";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v9.5";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v11";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -408,6 +408,10 @@ function gasFetch(url,opts,ms){
   return fetchT(url,opts,ms).then(function(r){
     return r.text().then(function(txt){
       var t=String(txt||"").replace(/^\s+/,"");
+      /* Google answers "無法開啟這個檔案" (a 404 page) both for a wrong address and when it fails
+         to start the script in time. If this address has worked before, it is the second. */
+      var known=ld("pt_gs_ok","");known=!!known&&String(url).split("?")[0]===known;
+      if(known&&(r.status===404||r.status>=500||(t.charAt(0)==="<"&&(!r.status||(r.status>=200&&r.status<300)))))throw gasErr("flaky","Google 回了錯誤頁（「無法開啟這個檔案」）：這個網址之前可以用，是 Google 那端暫時執行不了，會自動重試");
       if(r.status&&(r.status<200||r.status>=300))throw gasErr("http","Google 回應 HTTP "+r.status+(r.status===404?"：找不到這個部署（網址可能錯了，或部署已被封存）":""));
       if(t.charAt(0)==="<")throw gasErr("html","GAS 回傳的是網頁而不是資料：網址可能錯誤、部署已被封存，或存取權不是「任何人」");
       try{return JSON.parse(t)}catch(e){throw gasErr("parse","GAS 回應格式錯誤（不是 JSON）")}
@@ -417,25 +421,42 @@ function gasFetch(url,opts,ms){
     if(e&&e.name==="AbortError")throw gasErr("timeout","Google 在時限內沒有回應（Google 端延遲，或網路很慢）");
     throw gasErr("network","連不到 Google Apps Script（網路斷線、防火牆或擴充功能擋住 script.google.com，或這台的 GAS 網址已失效）")})}
 var CONN_KINDS={network:1,html:1,http:1};
-var SYNC_SHORT={busy:"雲端忙碌中",network:"連不到 Google",timeout:"Google 逾時",html:"GAS 網址或權限有誤",http:"GAS 網址有誤",parse:"GAS 回應異常",gas:"GAS 執行錯誤",data:"雲端資料異常",bug:"同步程式錯誤"};
+var SYNC_SHORT={flaky:"Google 暫時打不開",busy:"雲端忙碌中",network:"連不到 Google",timeout:"Google 逾時",html:"GAS 網址或權限有誤",http:"GAS 網址有誤",parse:"GAS 回應異常",gas:"GAS 執行錯誤",data:"雲端資料異常",bug:"同步程式錯誤"};
+/* Does the merged result hold anything the cloud copy lacks? Trades and deletions are compared
+   exactly; history ignores today's entry, which every device rewrites after each price refresh.
+   Prices are left out on purpose (each device fetches its own). */
+function trSig(arr){var m={},i,k,o=[];for(i=0;i<(arr||[]).length;i++){if(arr[i]&&arr[i].id)m[arr[i].id]=JSON.stringify(arr[i])}
+  k=Object.keys(m).sort();for(i=0;i<k.length;i++)o.push(m[k[i]]);return o.join("\n")}
+function mapSig(obj,skip){var k=Object.keys(obj||{}).sort(),o=[],i;for(i=0;i<k.length;i++){if(k[i]!==skip)o.push(k[i]+"="+JSON.stringify(obj[k[i]]))}return o.join("\n")}
+function histMap(h){var m={},i;for(i=0;i<(h||[]).length;i++){if(h[i]&&h[i].d)m[h[i].d]=h[i]}return m}
+function needPush(remote,M){var today=new Date().toISOString().slice(0,10);
+  return trSig(M.tr)!==trSig(remote.tr)||mapSig(M.del)!==mapSig(remote.del)||mapSig(histMap(M.hist),today)!==mapSig(histMap(remote.hist),today)}
 function syncNow(opts){
   var silent=!!(opts&&opts.silent);
   if(!GS){if(!silent)toast("請先設定 Google Apps Script URL");return}
   if(S.syncing)return;
   if(S._syRT){clearTimeout(S._syRT);S._syRT=null}
   S.syncing=true;S.menu=false;if(!silent)render();
-  var local={tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])},serverMerged=false;
+  var local={tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])},serverMerged=false,readOnly=false;
   gasFetch(GS+"?action=read&_t="+Date.now(),{cache:"no-store"},CLOUD_TIMEOUT_MS).then(function(d){
     var remote={tr:[],del:{},pr:{},hist:[]};
     if(d&&d.ok){
       var rt=parseJ(d.trades,[]);
       if(rt===null||!(rt instanceof Array))throw gasErr("data","雲端交易資料無法解析，已中止以免覆蓋");
       remote={tr:cleanTr(rt),del:parseJ(d.del,{})||{},pr:parseJ(d.prices,{})||{},hist:parseJ(d.history,[])||[]};
-    }else if(!(d&&(d.msg==="no sheet"||d.empty)))throw gasErr("gas","讀取雲端失敗："+((d&&(d.e||d.msg))||"GAS 回 ok:false"));
+    }else if(d&&(d.msg==="no sheet"||d.empty))remote.empty=true;
+    else throw gasErr("gas","讀取雲端失敗："+((d&&(d.e||d.msg))||"GAS 回 ok:false"));
     var M=mergeCore(remote,local);
+    /* Nothing of ours is missing from the cloud: a background sync stops at the read. Every write
+       rewrites the whole sheet, and writing it on every focus/wake -- hundreds of times a day
+       from several devices -- is the likeliest reason the sheet (and the script bound to it)
+       became slow to open. Manual syncs still write, and so does one sync every 6 hours so the
+       cloud copy of prices and today's snapshot doesn't go stale. */
+    if(silent&&!remote.empty&&!needPush(remote,M)&&Date.now()-ld("pt_lastpost",0)<21600000){readOnly=true;return M}
     return gasFetch(GS,{method:"POST",body:JSON.stringify({trades:JSON.stringify(M.tr),prices:JSON.stringify(M.pr),history:JSON.stringify(M.hist),del:JSON.stringify(M.del),app:APP_VER})},SYNC_POST_TIMEOUT_MS)
       .then(function(w){
         if(!w||!w.ok)throw gasErr((w&&/忙碌/.test(w.e||""))?"busy":"gas","寫入雲端失敗："+((w&&w.e)||"GAS 回 ok:false"));
+        sv("pt_lastpost",Date.now());
         if(w.merged&&w.trades){var wt=parseJ(w.trades,null);if(wt instanceof Array){serverMerged=true;M={tr:wt,del:parseJ(w.del,M.del)||M.del,pr:parseJ(w.prices,M.pr)||M.pr,hist:parseJ(w.history,M.hist)||M.hist}}}
         return M})
   }).then(function(M){
@@ -443,18 +464,18 @@ function syncNow(opts){
     S.syncing=false;S.synced=true;S.syncErr=null;S._syFail=0;gasOkNow();S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
     var parts=[];if(c.add)parts.push("新增 "+c.add);if(c.upd)parts.push("更新 "+c.upd);if(c.rem)parts.push("移除 "+c.rem);
     var msg="☁️ 已同步 · 共 "+c.n+" 筆"+(parts.length?"（"+parts.join("、")+"）":"");
-    if(!serverMerged)msg+=" · ⚠ GAS 未更新到 "+GAS_VER;
-    if(!silent||parts.length||!serverMerged)toast(msg);else render(true);
+    if(!serverMerged&&!readOnly)msg+=" · ⚠ GAS 未更新到 "+GAS_VER;
+    if(!silent||parts.length||(!serverMerged&&!readOnly))toast(msg);else render(true);
   }).catch(function(e){
     S.syncing=false;
     var kind=(e&&e.kind)||"bug",msg=(e&&e.kind)?e.message:("程式錯誤："+((e&&e.message)||e));
     S._syFail=(S._syFail||0)+1;
-    var transient=(kind==="network"||kind==="timeout"||kind==="busy");
+    var transient=(kind==="network"||kind==="timeout"||kind==="busy"||kind==="flaky");
     /* A phone that has just woken up, or a Wi-Fi handover, fails the first call now and then.
        A single background miss of that kind retries quietly; the banner only appears when it
        keeps failing, or straight away for anything a retry cannot fix (bad URL, GAS error). */
     if(silent&&transient&&S._syFail<2)S.syncErr=null;else S.syncErr={kind:kind,msg:msg,at:Date.now()};
-    if(kind==="network"||kind==="timeout")gasTrip();
+    if(kind==="network"||kind==="timeout"||kind==="flaky")gasTrip();
     if(transient&&cfgOk()){var dl=[20000,60000,300000][Math.min(S._syFail-1,2)];S._syRTat=Date.now()+dl;S._syRT=setTimeout(function(){S._syRT=null;syncNow({silent:true})},dl)}
     if(!silent)toast("同步失敗："+msg);
     render(true)});
@@ -565,7 +586,7 @@ function fetchT(url,opts,ms){
    automatic polls leave GAS alone for a while (Finnhub still serves US prices), and any
    answer from GAS ends the pause. */
 function gasTrip(){if(gasCooling())return;S._gasFail=(S._gasFail||0)+1;S._gasCoolUntil=Date.now()+GAS_COOL_MS[Math.min(S._gasFail-1,GAS_COOL_MS.length-1)]}
-function gasOkNow(){S._gasFail=0;S._gasCoolUntil=0}
+function gasOkNow(){S._gasFail=0;S._gasCoolUntil=0;if(GS&&ld("pt_gs_ok","")!==GS)sv("pt_gs_ok",GS)}
 function gasCooling(){return!!(S._gasCoolUntil&&Date.now()<S._gasCoolUntil)}
 function fetchOne(sym){
   if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"},GAS_TIMEOUT_MS).then(function(r){return r.json()}).then(function(d){if(d&&d.ok)gasOkNow();return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){gasTrip();return null})}
@@ -1083,14 +1104,14 @@ function renderConnCard(){
      "conn" when the request cannot get through at all. A connection test, when run, is
      newer evidence than the last sync error, so it decides. */
   var help=null,dh=null;
-  if(S.syncErr)help=CONN_KINDS[S.syncErr.kind]?"conn":S.syncErr.kind==="timeout"?"stuck":null;
+  if(S.syncErr)help=CONN_KINDS[S.syncErr.kind]?"conn":(S.syncErr.kind==="timeout"||S.syncErr.kind==="flaky")?"stuck":null;
   if(S.diag&&S.diag.length){for(i=0;i<S.diag.length;i++){var r=S.diag[i],st;
     if(r.ok)st='<span style="color:'+(r.slow?'var(--amber)':'var(--up)')+';text-align:right">'+(r.slow?'⚠ ':'✓ ')+esc(r.m)+'</span>';
     else if(r.skip)st='<span style="color:var(--dim)">– 略過（'+esc(r.why||"同上")+'）</span>';
     else st='<span style="color:var(--down);text-align:right">✕ '+esc(r.kind&&SYNC_SHORT[r.kind]?SYNC_SHORT[r.kind]:r.m)+'</span>';
     h+='<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px"><span style="flex-shrink:0">'+r.n+'</span>'+st+'</div>';
     if(!r.ok&&!r.skip&&r.kind&&!(S.syncErr&&S.syncErr.msg===r.m))h+='<div style="font-size:11px;color:var(--down);line-height:1.5;margin-top:2px">'+esc(r.m)+'</div>';
-    if(!r.ok&&!r.skip&&r.kind){if(CONN_KINDS[r.kind])dh="conn";else if(r.ping&&r.kind==="timeout")dh="stuck"}
+    if(!r.ok&&!r.skip&&r.kind){if(CONN_KINDS[r.kind])dh="conn";else if(r.kind==="flaky"||(r.ping&&r.kind==="timeout"))dh="stuck"}
     if(r.ok&&r.slow&&!dh)dh="slow"}
     if(!S.syncErr||(S.diagAt||0)>=S.syncErr.at)help=dh}
   var pingA=GS?'<a href="'+esc(GS+"?action=ping")+'" target="_blank" rel="noopener" style="color:var(--blue)">在新分頁打開 ping 測試 ↗</a>':'';
