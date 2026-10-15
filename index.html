@@ -26,7 +26,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .hdr{padding:12px 18px;background:rgba(0,0,0,.95);flex-shrink:0;display:flex;justify-content:space-between;align-items:center;z-index:20;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
 .scr{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:100px}
 .cnt{padding:8px 16px}
-.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;display:flex;justify-content:center;align-items:flex-end;gap:14px;padding:10px 16px 14px;background:linear-gradient(to top,#000 60%,transparent);z-index:20}
+.nav{position:absolute;bottom:0;left:0;right:0;width:100%;display:flex;justify-content:center;align-items:flex-end;gap:14px;padding:10px 16px 14px;background:linear-gradient(to top,#000 60%,transparent);z-index:20}
 @supports(padding:env(safe-area-inset-bottom)){.nav{padding-bottom:calc(14px + env(safe-area-inset-bottom))}.hdr{padding-top:calc(12px + env(safe-area-inset-top))}}
 .nb{background:0;border:0;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;font-size:11px;padding:6px 10px;font-family:inherit;gap:2px}
 .nb.on{color:var(--up)}
@@ -127,8 +127,8 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* === Status / meta === */
 .sr{display:flex;justify-content:space-between;padding:11px 16px;border-bottom:0.5px solid var(--border)}
 .sr:last-child{border-bottom:0}
-.toast{position:fixed;top:calc(66px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--up);color:var(--up);padding:10px 18px;border-radius:12px;font-size:13px;font-weight:600;z-index:200;pointer-events:none;animation:fadeout .3s 1.8s forwards;box-shadow:0 4px 16px rgba(0,0,0,.6)}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.toast{position:absolute;top:calc(66px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--up);color:var(--up);padding:10px 18px;border-radius:12px;font-size:13px;font-weight:600;z-index:200;pointer-events:none;animation:fadeout .3s 1.8s forwards;box-shadow:0 4px 16px rgba(0,0,0,.6)}
+.modal{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
 .dd{position:absolute;top:calc(58px + env(safe-area-inset-top,0px));right:12px;max-height:70vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--surface2);border:0.5px solid var(--border2);border-radius:14px;padding:6px;z-index:150;min-width:200px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
 .dd-item{display:flex;align-items:center;gap:10px;padding:10px 12px;color:var(--text);font-size:14px;cursor:pointer;border-radius:10px;font-family:inherit;border:0;background:0;width:100%;text-align:left}
 .dd-item:active{background:var(--surface)}
@@ -172,7 +172,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.6";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v9.7";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v12";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -1086,7 +1086,10 @@ function fixTradeDate(id,nd){var t=findTr(id);if(!t)return;t.date=nd;t.u=Date.no
 function devInfo(){try{var pr=document.createElement("div");pr.style.cssText="position:fixed;top:0;left:0;visibility:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)";
   document.body.appendChild(pr);var cs=getComputedStyle(pr),tp=parseInt(cs.paddingTop,10)||0,bt=parseInt(cs.paddingBottom,10)||0;document.body.removeChild(pr);
   var sa=!!(navigator.standalone||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches));
-  return"螢幕 "+screen.width+"×"+screen.height+" · 視窗 "+window.innerWidth+"×"+window.innerHeight+" · 安全區 上"+tp+"/下"+bt+(sa?" · 主畫面 App":" · 瀏覽器")}catch(e){return""}}
+  var vv=window.visualViewport,f=S._fit;
+  return"螢幕 "+screen.width+"×"+screen.height+" · 視窗 "+window.innerWidth+"×"+window.innerHeight+" · 版面高 "+document.documentElement.clientHeight
+    +(vv?" · 可見 "+Math.round(vv.height)+(Math.round(vv.offsetTop)?"（偏移 "+Math.round(vv.offsetTop)+"）":""):"")
+    +(f&&f.on?" · 已補高":"")+" · 安全區 上"+tp+"/下"+bt+(sa?" · 主畫面 App":" · 瀏覽器")}catch(e){return""}}
 function gasTail(){var m=String(GS||"").match(/\/s\/([^\/]+)\//);var id=m?m[1]:String(GS||"");return id?("…"+id.slice(-6)):"未設定"}
 /* One tap checks, in order, everything sync and prices depend on, so a failure names the
    broken link: this device's own internet (a non-Google site), reaching the script, its
@@ -1863,6 +1866,11 @@ function sr(l,v,c){return'<div class="sr"><span style="font-size:13px;color:var(
 function timeAgo(d){var m=Math.round((Date.now()-d.getTime())/60000);return m<1?"剛剛":m<60?m+"分鐘前":Math.floor(m/60)+"小時前"}
 
 render();
+fitViewport();
+window.addEventListener("resize",fitViewport);
+window.addEventListener("orientationchange",function(){setTimeout(fitViewport,300)});
+if(window.visualViewport)window.visualViewport.addEventListener("resize",function(){if(!typingNow()){resetPageScroll();fitViewport()}});
+document.addEventListener("focusout",function(){setTimeout(function(){if(!typingNow()){resetPageScroll();fitViewport()}},300)});
 setTimeout(maybeSync,1500);
 /* Just updated? Say so once. Then look for a newer build a few seconds after opening. */
 (function(){var u=ld("pt_upd",null);if(u&&u.v===APP_VER&&!u.done){sv("pt_upd",{v:u.v,at:u.at,done:1});setTimeout(function(){toast("已更新到 "+APP_VER+" ✓")},800)}})();
@@ -1911,8 +1919,27 @@ function applyUpdate(user){
   if(!user&&busyUI()){render(true);return}
   sv("pt_upd",{v:S.newVer,at:Date.now(),from:APP_VER});
   location.reload()}
+/* iOS can leave the page scrolled (or its visual viewport offset) after the keyboard closes.
+   The page itself never scrolls -- only .scr does -- so it is simply put back to 0. */
+function resetPageScroll(){try{
+  if(window.scrollY||window.pageYOffset||document.documentElement.scrollTop||document.body.scrollTop){
+    window.scrollTo(0,0);document.documentElement.scrollTop=0;document.body.scrollTop=0}}catch(e){}}
+/* Some iOS versions give a home-screen app a layout viewport shorter than the visible screen,
+   which shows as a black strip under the bottom bar. When the visible height is clearly taller
+   than the layout and no keyboard is up, the page is sized to the visible height instead. */
+function typingNow(){var ae=document.activeElement;return!!(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName||""))}
+function isStandalone(){return!!(navigator.standalone||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches))}
+function fitViewport(){try{
+  var vv=window.visualViewport,de=document.documentElement,b=document.body;if(!vv||!de||!b||typingNow())return;
+  var icb=de.clientHeight,vh=Math.round(vv.height),cap=Math.max(screen.height||0,screen.width||0)||9999;
+  /* only for the home-screen app: in a browser tab the toolbars legitimately change the visible height */
+  var fix=isStandalone()&&icb>0&&vh>icb+20&&vh<=cap+2;
+  S._fit={icb:icb,vh:vh,top:Math.round(vv.offsetTop||0),on:fix};
+  var want=fix?vh+"px":"";
+  if(de.style.height!==want){de.style.height=want;b.style.height=want}}catch(e){}}
 function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
+  resetPageScroll();fitViewport();
   var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync();checkUpdate(false)}
 document.addEventListener("visibilitychange",onWake);
 window.addEventListener("online",function(){S._lastTry=0;fetchPrices(true);if(cfgOk()&&!S.syncing&&(S.syncErr||S._syRT))syncNow({silent:true});else maybeSync()});
