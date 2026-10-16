@@ -53,6 +53,15 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .mgn-bg{background:var(--purple-soft);color:var(--purple)}
 .fchip{padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:0;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap}
 .fchip:active{background:var(--surface2)}
+.schip{padding:7px 12px;border-radius:9px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;letter-spacing:0.2px}
+.schip.old{background:0;color:var(--muted);font-weight:600}
+.schip:active{background:var(--surface3)}
+.flink{background:0;border:0;padding:6px 6px;margin:-6px -4px -6px 2px;color:var(--blue);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;line-height:1.5}
+.cst{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-top:12px}
+.cst-c{min-width:0}
+.cst-l{font-size:10px;color:var(--muted);font-weight:700;letter-spacing:0.4px;margin-bottom:3px}
+.cst-v{font-size:15px;font-weight:700;letter-spacing:-0.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cst-s{font-size:10px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;letter-spacing:0.3px}
 .buy-bg{background:var(--up-soft);color:var(--up)}
 .sell-bg{background:var(--down-soft);color:var(--down)}
@@ -116,11 +125,11 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .hold-right{text-align:right;flex-shrink:0}
 .hold-pnl{font-size:14px;font-weight:700;letter-spacing:-0.3px}
 .hold-pnlp{font-size:11px;font-weight:600;margin-top:1px}
-.hold-row2{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:0.5px solid var(--border)}
-.hold-today{font-size:11px;color:var(--muted)}
+.hold-row2{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:4px 6px;margin-top:12px;padding-top:10px;border-top:0.5px solid var(--border)}
+.hold-today{font-size:11px;color:var(--muted);white-space:nowrap}
 .hold-today b{font-weight:700;font-size:12px}
-.hold-ytd{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
-.hold-ytd-cmp{padding:1px 6px;border-radius:5px;font-weight:700;font-size:10px}
+.hold-ytd{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;white-space:nowrap;margin-left:auto}
+.hold-ytd-cmp{padding:1px 6px;border-radius:5px;font-weight:700;font-size:10px;white-space:nowrap}
 .hold-ytd-cmp.win{background:var(--up-soft);color:var(--up)}
 .hold-ytd-cmp.lose{background:var(--down-soft);color:var(--down)}
 
@@ -172,7 +181,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v9.7";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v10.0";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v12";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -909,12 +918,13 @@ function paintTotals(){
   var e4=document.getElementById("fnetl");if(e4)e4.textContent=(F.action==="buy")?"實付總額":"實收淨額";
 }
 function updTot(){
-  readF();F.cur=isTW(F.symbol)?"TWD":"USD";syncDefFee();
+  readF();F.cur=symCur(F.symbol,F.cur);syncDefFee();
   var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
   var fe=document.getElementById("f_fe");if(fe)fe.value=F.fee?(Math.round(F.fee*10000)/10000):"";
   paintTotals();
   var btn=document.getElementById("sbtn");if(btn)btn.disabled=!(F.symbol&&F.price&&F.qty&&+F.price>0&&+F.qty>0);
   var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml();
+  paintFormExtras();
 }
 function onFeeRate(){readF();F._frT=true;var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
   var fe=document.getElementById("f_fe");if(fe)fe.value=F.fee?(Math.round(F.fee*10000)/10000):"";
@@ -989,7 +999,7 @@ function buildLotsHtml(){
   for(var j=0;j<ls.length;j++){var L=ls[j],sel=F.lots.indexOf(L.id),on=sel>=0,tk=take[L.id]||0,fk=fifo[L.id]||0;
     h+='<div onclick="toggleLot(\''+L.id+'\')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+(on?"var(--up)":"var(--border)")+';border-radius:12px;margin-bottom:6px;cursor:pointer;background:'+(on?"var(--up-soft)":"transparent")+'">';
     h+='<div style="width:24px;height:24px;border-radius:7px;border:1.5px solid '+(on?"var(--up)":"var(--border2)")+';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:var(--up);flex-shrink:0">'+(on?(sel+1):"")+'</div>';
-    h+='<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">成本 @'+ps+f(L.p)+(L.m?' <span class="badge mgn-bg">融</span>':'')+'</div><div style="font-size:10px;color:var(--muted);margin-top:1px">'+L.d+'</div></div>';
+    h+='<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">成本 @'+ps+fmP(L.p,tw)+(L.m?' <span class="badge mgn-bg">融</span>':'')+'</div><div style="font-size:10px;color:var(--muted);margin-top:1px">'+L.d+'</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div style="font-size:12px;font-weight:700">剩 '+fmQ(L.r)+' '+un+'</div>'+((tk||fk)?'<div style="font-size:10px;color:'+(tk?"var(--up)":"var(--dim)")+'">配 '+fmQ(tk+fk)+' '+un+(tk?"":" (FIFO)")+'</div>':"")+'</div>';
     h+='</div>'}
   if(need>0){
@@ -999,7 +1009,158 @@ function buildLotsHtml(){
   h+='<div style="height:8px"></div>';
   return h}
 
+/* ------------------------------------------------------------------ v10 helpers */
+/* Per-share prices. Taiwan quotes move in 0.01-0.5 steps, so they keep up to two decimals
+   (188.5, not 189); NT$ amounts stay whole numbers as before. */
+function fmP(n,tw){if(!tw)return fm(n);if(n==null||isNaN(n))return"—";return Number(n).toLocaleString("en-US",{maximumFractionDigits:2})}
+/* Which market a typed symbol belongs to: digits only (2330, 00878) = Taiwan, any letter = US.
+   A half-typed number keeps the market already chosen, so typing "2" on 台股 doesn't flip it. */
+function symCur(s,dflt){s=String(s||"");return isTW(s)?"TWD":(/[A-Za-z]/.test(s)?"USD":(dflt||"USD"))}
+
+/* --- trade form: one-tap symbols --------------------------------------------------------
+   What is held now (largest first) and -- for a buy -- everything traded before, most recent
+   first. While a symbol is being typed only those starting with it are offered, so the row
+   doubles as autocomplete. Tapping one also switches the market to match. */
+var SYM_CHIPS=8;    /* two rows on a phone */
+function posVal(x){var p=gp(x.s);return toDisp(p?p*x.q*(x.cur==="TWD"?1000:1):x.c,x.cur)}
+function symChoices(){
+  var pf=calc(),out=[],seen={},i;
+  var ops=pf.op.slice().sort(function(a,b){return posVal(b)-posVal(a)});
+  for(i=0;i<ops.length;i++){if(isHidden(ops[i].s))continue;out.push({s:ops[i].s,h:1});seen[ops[i].s]=1}
+  if(F.action!=="sell"){
+    var trs=S.tr.slice().sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);return ka<kb?1:(ka>kb?-1:0)});
+    for(i=0;i<trs.length;i++){var s=trs[i].symbol;if(!s||seen[s])continue;seen[s]=1;out.push({s:s,h:0})}}
+  return out}
+function symChipsHtml(){
+  if(S.ed)return"";
+  var q=String(F.symbol||"").toUpperCase(),L=symChoices(),h="",n=0,i;
+  for(i=0;i<L.length&&n<SYM_CHIPS;i++){var s=L[i].s;
+    if(!/^[A-Z0-9.\-]{1,12}$/.test(s))continue;
+    if(q&&(s===q||s.indexOf(q)!==0))continue;
+    h+='<button class="schip'+(L[i].h?'':' old')+'" onclick="pickSym(\''+s+'\')">'+s+'</button>';n++}
+  return n?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+h+'</div>':""}
+function pickSym(sym){readF();F.symbol=sym;var c=symCur(sym,F.cur);
+  if(c!==F.cur){F.cur=c;if(!S.ed&&!F._frT)F.fr=defFee(c)}
+  var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
+  render()}
+
+/* --- trade form: hints under 價格 / 數量 -------------------------------------------------
+   Left: the latest quote, one tap copies it into 價格. Right: for a sale, how many shares (張)
+   are open at the trade's own date and time -- one tap sells them all; selling more than that
+   is still allowed (the record may be incomplete), just flagged. For a buy: what is held. */
+function openQty(sym){var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"23:59")),t=0,i;for(i=0;i<ls.length;i++)t+=ls[i].r;return Math.round(t*1e6)/1e6}
+function fHintHtml(){
+  var sym=String(F.symbol||"").toUpperCase();if(!sym)return'<div style="height:4px"></div>';
+  var tw=symCur(sym,F.cur)==="TWD",ps=tw?"NT$":"$",un=tw?"張":"股",L="",R="";
+  var q=gp(sym);
+  if(q){L='現價 '+ps+fmP(q,tw);if(Math.abs((+F.price||0)-q)>1e-9)L+='<button class="flink" onclick="useQuote()">帶入</button>'}
+  var have=openQty(sym),need=+F.qty||0;
+  if(F.action==="sell"){
+    if(!(have>QE))R='<span style="color:var(--amber)">沒有可賣的持股</span>';
+    else if(need>have+QE)R='<span style="color:var(--amber)">超過可賣的 '+H(fmQ(have))+' '+un+'</span><button class="flink" onclick="useAllQty()">改成全部</button>';
+    else R='可賣 '+H(fmQ(have))+' '+un+(Math.abs(need-have)>QE?'<button class="flink" onclick="useAllQty()">全部</button>':'');
+  }else if(have>QE)R='已持有 '+H(fmQ(have))+' '+un;
+  if(!L&&!R)return'<div style="height:4px"></div>';
+  return'<div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.5"><div style="flex:1;min-width:0">'+L+'</div><div style="flex:1;min-width:0">'+R+'</div></div>'}
+function useQuote(){readF();var q=gp(String(F.symbol||"").toUpperCase());if(!q)return;var e=document.getElementById("f_p");if(e)e.value=q;updTot()}
+function useAllQty(){readF();var have=openQty(String(F.symbol||"").toUpperCase());if(!(have>QE))return;var e=document.getElementById("f_q");if(e)e.value=have;updTot()}
+function feeChipsHtml(){var chips="";
+  for(var fpi=0;fpi<FEE_PRESETS.length;fpi++){var FP=FEE_PRESETS[fpi];
+    if(FP.cur&&FP.cur!==F.cur)continue;
+    if(FP.act&&FP.act!==F.action)continue;
+    chips+='<button class="fchip" onclick="setFeeRate('+FP.r+')">'+FP.n+'</button>'}
+  return chips?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'+chips+'</div>':""}
+/* The form is not re-rendered while typing (that would close the keyboard), so the parts that
+   depend on the symbol are refreshed in place. */
+function paintFormExtras(){
+  var e=document.getElementById("fChips");if(e)e.innerHTML=symChipsHtml();
+  e=document.getElementById("fHint");if(e)e.innerHTML=fHintHtml();
+  if(S._fCur!==F.cur)paintCur()}
+function paintCur(){var tw=F.cur==="TWD",ps=tw?"NT$":"$",e;S._fCur=F.cur;
+  e=document.getElementById("fcU");if(e)e.className="tg"+(tw?"":" on");
+  e=document.getElementById("fcT");if(e)e.className="tg"+(tw?" tw":"");
+  e=document.getElementById("fSymL");if(e)e.textContent=tw?"股票代號":"代號";
+  e=document.getElementById("f_s");if(e)e.placeholder=tw?"2330":"TSLA";
+  e=document.getElementById("fPL");if(e)e.textContent="每股價格 ("+ps+")";
+  e=document.getElementById("fQL");if(e)e.textContent=tw?"張數":"數量";
+  e=document.getElementById("fTip");if(e)e.style.display=tw?"":"none";
+  e=document.getElementById("f_fe");if(e)e.placeholder="金額 "+ps;
+  e=document.getElementById("fFeeChips");if(e)e.innerHTML=feeChipsHtml()}
+
+/* --- holding time -------------------------------------------------------------------------
+   Weighted by cost, so a large lot counts for more than a small one. Annualising a short holding
+   blows small moves up into meaningless numbers, so that is only shown from 90 days on. */
+var DAY_MS=86400000,ANN_MIN_DAYS=90;
+function heldDays(lots,now){now=now||Date.now();var sw=0,sd=0,i;
+  for(i=0;i<(lots||[]).length;i++){var L=lots[i];if(!L||!L.ts||!(L.r>QE))continue;var w=L.r*(L.p>0?L.p:1);sw+=w;sd+=w*Math.max(0,now-L.ts)}
+  return sw>0?sd/sw/DAY_MS:null}
+function closedDays(c){var m=(c&&c.matches)||[],sw=0,sd=0,i;
+  for(i=0;i<m.length;i++){if(!m[i].bts||!c.ts)continue;var w=m[i].cost>0?m[i].cost:(m[i].qty||0);if(!(w>0))continue;sw+=w;sd+=w*Math.max(0,c.ts-m[i].bts)}
+  return sw>0?sd/sw/DAY_MS:null}
+function fmDays(d){if(d==null||isNaN(d))return"—";if(d<1)return"不到 1 天";var n=Math.round(d);return n+" 天"+(n>=365?"（約 "+(n/365).toFixed(1)+" 年）":"")}
+function annualize(pct,days){if(pct==null||isNaN(pct)||!(days>0)||pct<=-100)return null;var a=(Math.pow(1+pct/100,365/days)-1)*100;return isFinite(a)?a:null}
+
+/* --- closed trades: statistics -------------------------------------------------------------
+   Over the trades in the current filter, in the display currency. Hidden symbols are left out
+   (as in the total above) and so is a sale with nothing matched (its buy is missing). A win is
+   P&L >= 0 -- the same rule as the 已盈利 filter. */
+function closedStats(arr){
+  var r={n:0,w:0,l:0,sw:0,sl:0,tot:0,best:null,worst:null,dsum:0,dn:0,yr:{}},i;
+  for(i=0;i<arr.length;i++){var it=arr[i],c=it&&it.c?it.c:it;if(!c||isHidden(c.s))continue;
+    if(!((c.qty||0)-(c.um||0)>QE))continue;
+    var v=toDisp(c.pnl,c.cur),ix=(it&&it.ix!=null)?it.ix:null;r.n++;r.tot+=v;
+    if(c.pnl>=0){r.w++;r.sw+=v}else{r.l++;r.sl+=v}
+    if(!r.best||v>r.best.v)r.best={v:v,s:c.s,d:c.date||"",ix:ix};
+    if(!r.worst||v<r.worst.v)r.worst={v:v,s:c.s,d:c.date||"",ix:ix};
+    var hd=closedDays(c);if(hd!=null){r.dsum+=hd;r.dn++}
+    var y=String(c.date||"").slice(0,4);
+    if(/^\d{4}$/.test(y)){var Y=r.yr[y]||(r.yr[y]={n:0,w:0,v:0,cb:0});Y.n++;Y.v+=v;Y.cb+=toDisp(c.cb,c.cur);if(c.pnl>=0)Y.w++}}
+  r.rate=r.n?r.w/r.n*100:null;r.aw=r.w?r.sw/r.w:null;r.al=r.l?r.sl/r.l:null;
+  r.ratio=(r.aw!=null&&r.al!=null&&r.al<0)?r.aw/-r.al:null;r.avg=r.n?r.tot/r.n:null;r.days=r.dn?r.dsum/r.dn:null;
+  return r}
+function sgnD(v){return(v>=0?"+":"-")+ds()+dfm(Math.abs(v))}
+function cstCell(l,v,col,sub,click){return'<div class="cst-c"'+(click?' style="cursor:pointer" onclick="'+click+'"':'')+'><div class="cst-l">'+l+'</div><div class="cst-v"'+(col?' style="color:'+col+'"':'')+'>'+v+'</div>'+(sub?'<div class="cst-s">'+sub+'</div>':'')+'</div>'}
+function closedStatsHtml(arr,range){
+  var st=closedStats(arr);if(!st.n)return"";
+  var open=ld("pt_clst","show")!=="hide",UP="var(--up)",DN="var(--down)";
+  var h='<div class="card" style="padding:12px 16px;margin-bottom:10px">';
+  h+='<div onclick="sv(\'pt_clst\',ld(\'pt_clst\',\'show\')===\'hide\'?\'show\':\'hide\');render()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:10px;font-weight:700;color:var(--muted);letter-spacing:0.8px">交易統計 · '+st.n+' 筆<span style="color:var(--blue);letter-spacing:0;font-weight:600;font-size:11px">'+(open?'▲ 收起':'▼ 展開')+'</span></div>';
+  if(!open)return h+'</div>';
+  var b=st.best,w=st.worst;
+  h+='<div class="cst">';
+  h+=cstCell("勝率",H(Math.round(st.rate)+"%"),"",st.w+" 賺 · "+st.l+" 賠");
+  h+=cstCell("盈虧比",st.ratio!=null?st.ratio.toFixed(2):"—","","平均賺 ÷ 平均賠");
+  h+=cstCell("平均獲利",st.aw!=null?H(sgnD(st.aw)):"—",st.aw!=null?UP:"");
+  h+=cstCell("平均虧損",st.al!=null?H(sgnD(st.al)):"—",st.al!=null?DN:"");
+  h+=(b&&b.v>0)?cstCell("最大獲利",H(sgnD(b.v)),UP,b.s+(b.d?" · "+b.d:""),b.ix!=null?"S.clIdx="+b.ix+";set({v:'cldet'})":""):cstCell("最大獲利","—");
+  h+=(w&&w.v<0)?cstCell("最大虧損",H(sgnD(w.v)),DN,w.s+(w.d?" · "+w.d:""),w.ix!=null?"S.clIdx="+w.ix+";set({v:'cldet'})":""):cstCell("最大虧損","—");
+  h+=cstCell("每筆平均",H(sgnD(st.avg)),st.avg>=0?UP:DN);
+  h+=cstCell("平均持有",fmDays(st.days),"");
+  h+='</div>';
+  /* one line per calendar year when looking at all time; a tap filters to that year */
+  var ys=Object.keys(st.yr).sort().reverse(),cy=String(new Date().getFullYear());
+  if(range==="all"&&ys.length>=2){
+    h+='<div style="border-top:0.5px solid var(--border);margin-top:12px;padding-top:4px">';
+    for(var i=0;i<ys.length;i++){var Y=st.yr[ys[i]],yc=Y.v>=0?UP:DN,key=ys[i]===cy?"ytd":"y"+ys[i];
+      h+='<div onclick="S.clF.r=\''+key+'\';render()" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;cursor:pointer;font-size:12px">';
+      h+='<span style="white-space:nowrap"><b>'+ys[i]+'</b> <span style="color:var(--muted);font-size:11px">'+Y.n+' 筆 · 勝率 '+H(Math.round(Y.w/Y.n*100)+"%")+'</span></span>';
+      h+='<span style="font-weight:700;color:'+yc+';white-space:nowrap">'+H(sgnD(Y.v))+(Y.cb>0?' <span style="font-size:11px;font-weight:600">('+H((Y.v>=0?"+":"")+fm(Y.v/Y.cb*100)+"%")+')</span>':'')+' <span style="color:var(--dim)">›</span></span></div>'}
+    h+='</div>'}
+  return h+'</div>'}
+
+/* --- time filters: past calendar years ------------------------------------------------------
+   Every earlier year that has records, newest first (this year is 年初至今). A year that is
+   selected but no longer has records stays in the list, so the box never shows the wrong label. */
+var BASE_RANGES=[["all","全部時間"],["today","今天"],["7d","過去7天"],["30d","過去30天"],["90d","過去90天"],["mtd","本月至今"],["ytd","年初至今"]];
+function yearRanges(dates,cur){var y0=new Date().getFullYear(),m={},out=[],i,k;
+  for(i=0;i<dates.length;i++){var y=parseInt(String(dates[i]||"").slice(0,4),10);if(y&&y<y0)m[y]=1}
+  if(/^y\d{4}$/.test(cur||""))m[+cur.slice(1)]=1;
+  for(k in m)out.push(+k);out.sort(function(a,b){return b-a});
+  for(i=0;i<out.length;i++)out[i]=["y"+out[i],out[i]+" 年"];
+  return out}
+function filterTo(r){return/^y\d{4}$/.test(r||"")?r.slice(1)+"-12-31":null}
 function filterFrom(r){var now=new Date(),d=null;
+  if(/^y\d{4}$/.test(r||""))return r.slice(1)+"-01-01";
   if(r==="today")d=now;
   else if(r==="7d"){d=new Date(now);d.setDate(d.getDate()-7)}
   else if(r==="30d"){d=new Date(now);d.setDate(d.getDate()-30)}
@@ -1009,8 +1170,8 @@ function filterFrom(r){var now=new Date(),d=null;
   if(!d)return null;
   var m=("0"+(d.getMonth()+1)).slice(-2),dd=("0"+d.getDate()).slice(-2);
   return d.getFullYear()+"-"+m+"-"+dd}
-function filterBar(key,fst,symList){
-  var ranges=[["all","全部時間"],["today","今天"],["7d","過去7天"],["30d","過去30天"],["90d","過去90天"],["mtd","本月至今"],["ytd","年初至今"]];
+function filterBar(key,fst,symList,years){
+  var ranges=BASE_RANGES.concat(years||[]);
   var h='<div style="display:flex;gap:8px;margin-bottom:10px">';
   h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.'+key+'.r=this.value;render()">';
   for(var i=0;i<ranges.length;i++)h+='<option value="'+ranges[i][0]+'"'+(fst.r===ranges[i][0]?" selected":"")+'>'+ranges[i][1]+'</option>';
@@ -1058,7 +1219,7 @@ function healthReport(){
     var dk=[t.symbol,t.action,t.price,t.qty,t.date,t.tm||""].join("|");
     if(seen[dk]){iss.push({lv:1,s:t.symbol,msg:"疑似重複輸入："+trDesc(t)});Y.iss++}seen[dk]=1;
     var dd=t.symbol+"|"+t.date;if(!day[dd])day[dd]={b:0,s:0,notm:0};day[dd][t.action==="buy"?"b":"s"]++;if(!t.tm)day[dd].notm++}
-  for(k in day){if(day[k].b&&day[k].s&&day[k].notm){var p0=k.split("|");iss.push({lv:2,s:p0[0],msg:p0[1]+" 同一天有買有賣但未填時間，已預設買入在前；若實際是先賣後買，請補上時間"})}}
+  for(k in day){if(day[k].b&&day[k].s&&day[k].notm){var p0=k.split("|");iss.push({lv:2,s:p0[0],d:p0[1],msg:p0[1]+" 同一天有買有賣但未填時間，已預設買入在前；若實際是先賣後買，請補上時間"})}}
   var pf=calc();
   for(i=0;i<pf.cl.length;i++){var c=pf.cl[i];if(c.um>QE&&sy[c.s]){sy[c.s].um+=c.um;sy[c.s].iss++;
     iss.push({lv:0,s:c.s,id:c.id,msg:dtLabel(c)+" 賣出 "+fmQ(c.qty)+" 股，其中 "+fmQ(c.um)+" 股找不到可配對的買入 → 可能缺少買入紀錄，或買入日期/時間晚於賣出"})}}
@@ -1170,19 +1331,35 @@ function renderHealth(){
   h+='<div style="font-size:12px;color:var(--muted);line-height:1.7">本機 '+R.n+' 筆交易 · '+R.list.length+' 檔個股 · 刪除紀錄 '+nDel+' 筆<br>'+(ls?"上次雲端同步 "+new Date(ls).toLocaleString("zh-TW"):"尚未用新版同步過")+'</div>';
   h+='<button class="bp" style="width:100%;margin-top:12px;padding:10px" onclick="syncNow()">'+(S.syncing?"⏳ 同步中…":"⇅ 立即雲端同步（合併）")+'</button></div>';
   h+=renderConnCard();
-  if(R.iss.length){h+='<div class="section-label">需要注意</div>';
-    for(i=0;i<R.iss.length;i++){var it=R.iss[i],col=it.lv===0?"var(--down)":it.lv===1?"var(--amber)":"var(--muted)",ic=it.lv===0?"✕":it.lv===1?"⚠":"ⓘ";
+  /* v10: the "same day, no time" notes are informational and can run to dozens; more than two
+     are folded into one card so the real problems stand out. */
+  var infos=[],main=[];for(i=0;i<R.iss.length;i++)(R.iss[i].lv===2&&R.iss[i].d?infos:main).push(R.iss[i]);
+  if(infos.length<=2){main=main.concat(infos);infos=[]}
+  if(main.length||infos.length){h+='<div class="section-label">需要注意</div>';
+    for(i=0;i<main.length;i++){var it=main[i],col=it.lv===0?"var(--down)":it.lv===1?"var(--amber)":"var(--muted)",ic=it.lv===0?"✕":it.lv===1?"⚠":"ⓘ";
       h+='<div class="card" style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;cursor:pointer" onclick="S.trF={r:\'all\',s:\''+it.s+'\'};set({v:\'trades\'})"><span style="color:'+col+';font-weight:800;flex-shrink:0">'+ic+'</span><div style="font-size:12px;line-height:1.55;flex:1"><b>'+it.s+'</b> '+it.msg;
       if(it.fix)h+='<br><button class="bp" style="margin-top:8px;padding:7px 12px;font-size:12px;width:auto" onclick="event.stopPropagation();fixTradeDate(\''+it.fix.id+'\',\''+it.fix.date+'\')">一鍵改為 '+it.fix.date+'</button>';
-      h+='</div></div>'}}
+      h+='</div></div>'}
+    if(infos.length){var iSy={},nIS=0;for(i=0;i<infos.length;i++){if(!iSy[infos[i].s]){iSy[infos[i].s]=1;nIS++}}
+      h+='<div class="card" style="padding:11px 14px"><div style="display:flex;gap:10px;align-items:flex-start;cursor:pointer" onclick="S._hInfo=!S._hInfo;render()"><span style="color:var(--muted);font-weight:800;flex-shrink:0">ⓘ</span><div style="font-size:12px;line-height:1.55;flex:1"><b>'+infos.length+' 處</b>同一天有買有賣但沒填時間（'+nIS+' 檔）：已預設買入在前；若實際是先賣後買，請補上時間 <span style="color:var(--blue);white-space:nowrap">'+(S._hInfo?'▲ 收起':'▼ 查看')+'</span></div></div>';
+      if(S._hInfo){h+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;padding-left:22px">';
+        for(i=0;i<infos.length;i++)h+='<button class="fchip" onclick="S.trF={r:\'all\',s:\''+infos[i].s+'\'};set({v:\'trades\'})">'+infos[i].s+' '+infos[i].d+'</button>';
+        h+='</div>'}
+      h+='</div>'}}
   h+='<div class="section-label">逐檔對帳（點擊看交易）</div><div class="card" style="padding:0;overflow:hidden">';
   h+='<div style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:6px;padding:9px 14px;font-size:10px;font-weight:700;color:var(--dim);letter-spacing:0.5px;border-bottom:1px solid var(--border)"><span>代號</span><span style="text-align:right">買入</span><span style="text-align:right">賣出</span><span style="text-align:right">持有</span></div>';
-  for(i=0;i<R.list.length;i++){var Y=R.list[i],un=Y.cur==="TWD"?"張":"",flag=Y.um>QE?"var(--down)":Y.iss?"var(--amber)":"";
+  /* v10: symbols that are fully closed and clean are folded away -- they used to fill most of the page */
+  function gone(Y){return!(Y.held>QE)&&!Y.iss&&!(Y.um>QE)}
+  var nGone=0;for(i=0;i<R.list.length;i++){if(gone(R.list[i]))nGone++}
+  var rows=[];for(i=0;i<R.list.length;i++){if(!gone(R.list[i]))rows.push(R.list[i])}
+  if(S._hGone){for(i=0;i<R.list.length;i++){if(gone(R.list[i]))rows.push(R.list[i])}}
+  for(i=0;i<rows.length;i++){var Y=rows[i],un=Y.cur==="TWD"?"張":"",flag=Y.um>QE?"var(--down)":Y.iss?"var(--amber)":"";
     h+='<div onclick="S.trF={r:\'all\',s:\''+Y.s+'\'};set({v:\'trades\'})" style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:6px;padding:10px 14px;font-size:12px;border-bottom:1px solid var(--border);cursor:pointer">';
     h+='<span style="font-weight:700'+(flag?";color:"+flag:"")+'">'+(flag?"⚠ ":"")+Y.s+'</span>';
     h+='<span style="text-align:right;color:var(--muted)">'+H(fmQ(Y.bq)+un)+'<br><span style="font-size:10px;color:var(--dim)">'+Y.nb+' 筆</span></span>';
     h+='<span style="text-align:right;color:var(--muted)">'+H(fmQ(Y.sq)+un)+'<br><span style="font-size:10px;color:var(--dim)">'+Y.ns+' 筆</span></span>';
     h+='<span style="text-align:right;font-weight:700'+(Y.held>QE?"":";color:var(--dim)")+'">'+(Y.held>QE?H(fmQ(Y.held)+un):"已清倉")+'</span></div>'}
+  if(nGone)h+='<div onclick="S._hGone=!S._hGone;render()" style="padding:11px 14px;font-size:12px;color:var(--blue);cursor:pointer;text-align:center">'+(S._hGone?'▲ 收起已清倉':'▼ 顯示已清倉 '+nGone+' 檔')+'</div>';
   h+='</div>';
   h+='<div class="section-label">交易遺失時怎麼救回</div><div class="card" style="font-size:12px;line-height:1.75;color:var(--muted)">';
   h+='<b style="color:#fff">1. 先在每台裝置按一次「雲端同步」</b><br>新版同步是合併制：任何一台還留著那幾筆交易，同步後就會回到所有裝置。<br>';
@@ -1379,11 +1556,11 @@ function renderDonut(slices,total){
   s+='</svg></div><div style="flex:1;min-width:0;font-size:11px">';
   for(var i=0;i<slices.length;i++){
     var pct=total>0?(slices[i].v/total*100):0,col=colors[i%colors.length];
-    s+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">';
+    s+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">';
     s+='<div style="width:7px;height:7px;border-radius:2px;background:'+col+';flex-shrink:0"></div>';
-    s+='<span style="font-weight:700;color:#fff;min-width:48px">'+slices[i].s+'</span>';
-    s+='<span style="color:var(--muted)">'+fm(pct)+'%</span>';
-    s+='<span style="color:var(--dim);font-size:10px;margin-left:auto">'+H(D+dfm(slices[i].v))+'</span>';
+    s+='<span style="font-weight:700;color:#fff;min-width:46px">'+slices[i].s+'</span>';
+    s+='<span style="color:var(--muted);white-space:nowrap">'+fm(pct)+'%</span>';
+    s+='<span style="color:var(--dim);font-size:10px;margin-left:auto;white-space:nowrap">'+H(dfmK(slices[i].v))+'</span>';
     s+='</div>';
   }
   s+='</div></div></div>';
@@ -1449,18 +1626,22 @@ function render(passive){try{
     var dayChg=p&&pcv?(p-pcv):null,dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null,dcCol=dayChg!=null?(dayChg>=0?"var(--up)":"var(--down)"):"var(--muted)";
     var prSess=liveSess(prData);
     var sN=(prSess&&prSess!=="regular")?sessName(prSess):"";
-    h+=sr("每股價格"+(sN?"（"+sN+"）":""),H(p?ps+f(p):"未設定"),"#fff");
+    h+=sr("每股價格"+(sN?"（"+sN+"）":""),H(p?ps+fmP(p,tw):"未設定"),"#fff");
     if(prData&&prData.rp&&sN&&p){var exd=p-prData.rp,exc=exd>=0?"var(--up)":"var(--down)";
-      h+=sr("盤中收盤",H(ps+f(prData.rp)),"var(--muted)");
-      h+=sr(sN+"變動",H((exd>=0?"+":"")+ps+f(exd)+" ("+(prData.rp>0?((exd/prData.rp*100>=0?"+":"")+fm(exd/prData.rp*100)):"—")+"%)"),exc)}
+      h+=sr("盤中收盤",H(ps+fmP(prData.rp,tw)),"var(--muted)");
+      h+=sr(sN+"變動",H((exd>=0?"+":"-")+ps+fmP(Math.abs(exd),tw)+" ("+(prData.rp>0?((exd/prData.rp*100>=0?"+":"")+fm(exd/prData.rp*100)):"—")+"%)"),exc)}
     if(prData&&prData.qt)h+=sr("報價時間",new Date(prData.qt*1000).toLocaleString("zh-TW"),"var(--muted)");
     h+=sr("數量",H(fmQ(pos.q)+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#fff");
     var tdR=computeTodayBreakdown(pf).map[S.det];if(tdR&&tdR.raw!=null)h+=sr("今日損益（含今天買賣）",H((tdR.raw>=0?"+":"-")+ps+f(Math.abs(tdR.raw))),tdR.raw>=0?"var(--up)":"var(--down)");
-    if(dayChg!=null)h+=sr("今日漲跌",H((dayChg>=0?"+":"")+ps+f(dayChg)+" ("+(dayPct>=0?"+":"")+fm(dayPct)+"%)"),dcCol);
-    h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"var(--blue)")+sr("每股成本（含手續費）",ps+f(avgPS),"#fff")+sr("總成本",H(ps+f(pos.c)),"#fff");
+    if(dayChg!=null)h+=sr("今日漲跌",H((dayChg>=0?"+":"-")+ps+fmP(Math.abs(dayChg),tw)+" ("+(dayPct>=0?"+":"")+fm(dayPct)+"%)"),dcCol);
+    h+=sr("當前市值",H(mV!=null?ps+f(mV):"—"),"var(--blue)")+sr("每股成本（含手續費）",ps+fmP(avgPS,tw),"#fff")+sr("總成本",H(ps+f(pos.c)),"#fff");
     if(pos.db>0){h+=sr("融資餘額",H("-"+ps+f(pos.db)),"var(--purple)");
       h+=sr("持倉淨值",H(mV!=null?ps+f(mV-pos.db):"—"),"var(--purple)")}
     h+=sr("損益",H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):"—"),pc)+sr("報酬率",H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"—"),pc);
+    var hdD=heldDays(pos.lots);
+    if(hdD!=null){h+=sr(pos.lots.length>1?"平均持有天數":"持有天數",fmDays(hdD),"#fff");
+      var annD=(rt!=null&&hdD>=ANN_MIN_DAYS)?annualize(rt,hdD):null;
+      if(annD!=null)h+=sr("年化報酬（估）",H((annD>=0?"+":"")+fm(annD)+"%"),annD>=0?"var(--up)":"var(--down)")}
     h+=sr("已實現損益",H(rP?(rP>=0?"+":"-")+ps+f(Math.abs(rP)):ps+"0"),rP>=0?"var(--up)":"var(--down)");
     /* YTD comparison row in detail page */
     var ytdBase=S.ytd[S.det];
@@ -1468,7 +1649,7 @@ function render(passive){try{
       var marketYtd=((p-ytdBase)/ytdBase)*100;
       var yourYtd=rt; /* approx: from your avg to now (we don't have full timeline; use overall rt) */
       var alpha=yourYtd-marketYtd;
-      h+=sr("市場 YTD ("+ps+f(ytdBase)+" 起)",H((marketYtd>=0?"+":"")+fm(marketYtd)+"%"),marketYtd>=0?"var(--up)":"var(--down)");
+      h+=sr("市場 YTD ("+ps+fmP(ytdBase,tw)+" 起)",H((marketYtd>=0?"+":"")+fm(marketYtd)+"%"),marketYtd>=0?"var(--up)":"var(--down)");
       h+=sr("選股眼光 (你 vs 市場)",H((alpha>=0?"+":"")+fm(alpha)+" pp 🎯"),alpha>=0?"var(--up)":"var(--down)");
     }
     if(pAt)h+=sr("更新時間",new Date(pAt).toLocaleString("zh-TW"),"#fff");
@@ -1497,7 +1678,7 @@ function render(passive){try{
       var isClosed=ti&&ti.closed;
       h+='<div class="card" style="display:flex;align-items:center;gap:6px;padding:11px 14px;border-radius:14px'+(isClosed?";opacity:.45":"")+'">';
       h+='<div style="flex:1;cursor:pointer;min-width:0" onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}">';
-      h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span>'+(isMargin(t)?'<span class="badge mgn-bg">融</span>':'')+'<span style="font-weight:700;font-size:13px">@'+ps+f(t.price)+'</span><span style="font-size:11px;color:var(--muted)">x'+H(fmQ(t.qty)+un)+'</span></div>';
+      h+='<div style="display:flex;align-items:center;gap:8px"><span class="badge '+(t.action==="buy"?"buy-bg":"sell-bg")+'">'+(t.action==="buy"?"買入":"賣出")+'</span>'+(isMargin(t)?'<span class="badge mgn-bg">融</span>':'')+'<span style="font-weight:700;font-size:13px">@'+ps+fmP(t.price,tw)+'</span><span style="font-size:11px;color:var(--muted)">x'+H(fmQ(t.qty)+un)+'</span></div>';
       h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">'+dtLabel(t);
       var tfe=trFee(t);if(tfe>0)h+=' · <span style="color:var(--down)">費 '+ps+f(tfe)+'</span>';
       if(ti&&ti.part)h+=' · <span style="color:var(--amber)">已平 '+H(fmQ(ti.cq))+' · 剩 '+H(fmQ(ti.rem))+' '+un+'</span>';
@@ -1507,7 +1688,7 @@ function render(passive){try{
       else if(hasV)h+='<div style="font-weight:700;font-size:13px;color:'+tiCol+'">'+H((ti.v>=0?"+":"-")+ps+f(Math.abs(ti.v)))+'</div><div style="font-size:10px;color:'+tiCol+'">'+(ti.rz?"已實現 ":"未實現 ")+H(ti.pct!=null?((ti.pct>=0?"+":"")+fm(ti.pct)+"%"):"—")+'</div>';
       else h+='<div style="font-size:11px;color:var(--dim)">—</div>';
       h+='</div>';
-      h+='<button onclick="event.stopPropagation();set({modal:{type:\'deltrade\',id:\''+t.id+'\',sym:\''+t.symbol+'\',desc:\''+(t.action==="buy"?"買入":"賣出")+' '+fmQ(t.qty)+un+' @'+ps+f(t.price)+'\'}})" style="background:0;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:4px">🗑</button></div>'}
+      h+='<button onclick="event.stopPropagation();set({modal:{type:\'deltrade\',id:\''+t.id+'\',sym:\''+t.symbol+'\',desc:\''+(t.action==="buy"?"買入":"賣出")+' '+fmQ(t.qty)+un+' @'+ps+fmP(t.price,tw)+'\'}})" style="background:0;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:4px">🗑</button></div>'}
     h+='<div style="margin-top:20px;display:flex;flex-direction:column;gap:8px"><button onclick="toggleHidePos(\''+S.det+'\');set({v:\'home\',det:null})" style="padding:12px;border-radius:14px;border:1px solid var(--border2);background:0;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;width:100%">'+(isHidden(S.det)?"👁 取消隱藏":"👁‍🗨 隱藏（不計入總覽）")+'</button><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除持倉</button></div></div></div>';
     if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">要隱藏還是刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.5">💡 建議使用<span style="color:var(--up)">隱藏</span>：不計入總覽但保留資料，可隨時恢復<br><span style="color:var(--down)">刪除</span>：永久移除所有交易紀錄，會影響資產曲線</div><div style="display:flex;flex-direction:column;gap:8px"><button class="bp" style="width:100%" onclick="toggleHidePos(\''+S.modal.sym+'\');S.modal=null;S.det=null;S.v=\'home\';saveLocal();toast(\'已隱藏 '+S.modal.sym+'\');render()">👁‍🗨 隱藏（推薦）</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">🗑 永久刪除</button><button class="bs" style="width:100%" onclick="set({modal:null})">取消</button></div></div></div>';
     if(S.modal&&S.modal.type==="deltrade")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">刪除此筆交易？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px">'+S.modal.desc+'</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="delTrades([S.modal.id]);S.modal=null;toast(\'已刪除\');render()">刪除</button></div></div></div>';
@@ -1527,10 +1708,14 @@ function render(passive){try{
     h+='<div style="font-size:14px;color:'+cl2+';margin-top:4px;font-weight:600">'+H((c.cb>0?(c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%":""))+'</div>';
     h+='</div>';
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
-    h+=sr("賣出價格",ps+f(c.price),"#fff")+sr("賣出數量",H(fmQ(c.qty)+" "+un),"#fff")+sr("賣出總額",H(ps+f(sellTotal)),"#fff");
+    h+=sr("賣出價格",ps+fmP(c.price,tw),"#fff")+sr("賣出數量",H(fmQ(c.qty)+" "+un),"#fff")+sr("賣出總額",H(ps+f(sellTotal)),"#fff");
     if(c.fee>0)h+=sr("賣出手續費",H("-"+ps+f(c.fee)),"var(--down)");
-    h+=sr("買入均價（含手續費）",ps+f(avgBuy),"#fff")+sr("買入成本",H(ps+f(c.cb)),"#fff");
+    h+=sr("買入均價（含手續費）",ps+fmP(avgBuy,tw),"#fff")+sr("買入成本",H(ps+f(c.cb)),"#fff");
     h+=sr("實現損益",H((g?"+":"-")+ps+f(Math.abs(c.pnl))),cl2)+sr("報酬率",H(c.cb>0?(c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%":"—"),cl2)+sr("平倉日期",dtLabel(c),"#fff");
+    var hdC=closedDays(c);
+    if(hdC!=null){h+=sr((c.matches&&c.matches.length>1)?"平均持有天數":"持有天數",fmDays(hdC),"#fff");
+      var annC=(c.cb>0&&hdC>=ANN_MIN_DAYS)?annualize(c.pnl/c.cb*100,hdC):null;
+      if(annC!=null)h+=sr("年化報酬（估）",H((annC>=0?"+":"")+fm(annC)+"%"),annC>=0?"var(--up)":"var(--down)")}
     h+='</div>';
     if(c.um>QE)h+='<div class="card" style="border-left:3px solid var(--amber);margin-bottom:10px;font-size:12px;line-height:1.6;color:var(--muted)"><b style="color:var(--amber)">⚠ 有 '+H(fmQ(c.um))+' '+un+'找不到可配對的買入</b><br>可能缺少買入紀錄，或買入的日期/時間晚於這筆賣出。已實現損益只計入可配對的部分，請到「⋯ → 資料健檢」查看。</div>';
     if(c.matches&&c.matches.length){
@@ -1538,23 +1723,25 @@ function render(passive){try{
       /* Pro-rate the sell fee across the matched lots so the rows add up to c.pnl. */
       for(var i=0;i<c.matches.length;i++){var m=c.matches[i],mFee=(c.qty>0?(c.fee||0)*(m.qty/c.qty):0),mPnl=(c.price*m.qty*mul)-mFee-m.cost,mg=mPnl>=0;
         h+='<div class="card" style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px">';
-        h+='<div><div style="display:flex;align-items:center;gap:6px"><span class="badge buy-bg">買</span><span style="font-weight:700">'+ps+f(m.buyPrice)+'</span><span style="color:var(--muted);font-size:11px">x'+fmQ(m.qty)+un+'</span></div>';
-        h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">買入日 '+m.date+'</div></div>';
-        h+='<div style="text-align:right"><div style="font-weight:700;color:'+(mg?"var(--up)":"var(--down)")+'">'+(mg?"+":"-")+ps+f(Math.abs(mPnl))+'</div>';
-        h+='<div style="font-size:10px;color:'+(mg?"var(--up)":"var(--down)")+';font-weight:600">'+(m.cost>0?(mPnl/m.cost*100>=0?"+":"")+fm(mPnl/m.cost*100)+"%":"")+'</div></div></div>'}
+        h+='<div><div style="display:flex;align-items:center;gap:6px"><span class="badge buy-bg">買</span><span style="font-weight:700">'+ps+fmP(m.buyPrice,tw)+'</span><span style="color:var(--muted);font-size:11px">x'+H(fmQ(m.qty)+un)+'</span></div>';
+        h+='<div style="font-size:11px;color:var(--muted);margin-top:3px">買入日 '+m.date+(m.bts&&c.ts?' · 持有 '+fmDays(Math.max(0,c.ts-m.bts)/DAY_MS):'')+'</div></div>';
+        h+='<div style="text-align:right"><div style="font-weight:700;color:'+(mg?"var(--up)":"var(--down)")+'">'+H((mg?"+":"-")+ps+f(Math.abs(mPnl)))+'</div>';
+        h+='<div style="font-size:10px;color:'+(mg?"var(--up)":"var(--down)")+';font-weight:600">'+(m.cost>0?H((mPnl/m.cost*100>=0?"+":"")+fm(mPnl/m.cost*100)+"%"):"")+'</div></div></div>'}
     }
     h+='</div></div>';
     fin(h);return}
 
   /* === Trade form === */
   if(S.v==="form"){
-    if(S.ed&&!F.id)initF(S.ed);var tw=F.cur==="TWD",ps=tw?"NT$":"$";
+    if(S.ed&&!F.id)initF(S.ed);var tw=F.cur==="TWD",ps=tw?"NT$":"$";S._fCur=F.cur;
     h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="S.ed=null;initF();set({v:\'home\'})">‹</button><div class="brand"><span class="brand-name">'+(S.ed?"編輯交易":"新增交易")+'</span></div><div style="width:36px"></div></div><div class="scr"><div class="cnt"><div class="card" style="padding:20px 18px">';
-    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button></div>';
+    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button id="fcU" class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button id="fcT" class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button></div>';
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.action==="buy"?"on":"")+'" onclick="setFAct(\'buy\')">買入</button><button class="tg '+(F.action==="sell"?"sell":"")+'" onclick="setFAct(\'sell\')">賣出</button></div>';
-    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" style="margin-bottom:14px">';
-    h+='<div style="display:flex;gap:10px;margin-bottom:10px"><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
-    if(tw)h+='<div style="font-size:11px;color:var(--amber);margin-bottom:8px">💡 1張=1000股，總成本 = 股價 × 張數 × 1000</div>';
+    h+='<div id="fSymL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" autocomplete="off" autocapitalize="characters" spellcheck="false" style="margin-bottom:8px">';
+    h+='<div id="fChips">'+symChipsHtml()+'</div><div style="height:6px"></div>';
+    h+='<div style="display:flex;gap:10px;margin-bottom:6px"><div style="flex:1"><div id="fPL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div id="fQL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
+    h+='<div id="fHint">'+fHintHtml()+'</div>';
+    h+='<div id="fTip" style="font-size:11px;color:var(--amber);margin-bottom:8px'+(tw?'':';display:none')+'">💡 1張=1000股，總成本 = 股價 × 張數 × 1000</div>';
     var f0=tw?fmTW:fm,tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1),fee0=fFee(),net0=(F.action==="buy")?(tot+fee0):(tot-fee0);
     /* --- 手續費 --- */
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">手續費（預設 0）</div>';
@@ -1564,12 +1751,7 @@ function render(passive){try{
     h+='</div>';
     /* Only show presets that apply to this market AND this action, so a 賣出-only rate
        like 台股賣 0.4425%（含證交稅）can never be tapped onto a 買入 by mistake. */
-    var chips="";
-    for(var fpi=0;fpi<FEE_PRESETS.length;fpi++){var FP=FEE_PRESETS[fpi];
-      if(FP.cur&&FP.cur!==F.cur)continue;
-      if(FP.act&&FP.act!==F.action)continue;
-      chips+='<button class="fchip" onclick="setFeeRate('+FP.r+')">'+FP.n+'</button>'}
-    if(chips)h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'+chips+'</div>';
+    h+='<div id="fFeeChips">'+feeChipsHtml()+'</div>';
     h+='<div style="font-size:10px;color:var(--dim);margin-bottom:14px;line-height:1.5">費率為主：改費率會重算金額；直接改金額（例如低消）會反推費率。費率會記成此市場的預設值。</div>';
     /* --- 金額小計 --- */
     h+='<div style="background:var(--surface2);border-radius:12px;padding:10px 14px;margin-bottom:14px">';
@@ -1610,7 +1792,7 @@ function render(passive){try{
     h+='<div style="padding:6px 12px 4px;font-size:10px;color:var(--dim);letter-spacing:0.3px">版本 '+APP_VER+' · GAS '+GAS_VER+'</div>';
     h+='</div>';
   }
-  h+='<div class="pst">';
+  h+='<div class="pst">';var pst0=h.length;
   /* v7: report the age of the QUOTE, not the age of the network call, and show a real
      failure state. The old line printed "更新於 剛剛" even when every fetch had come back
      empty, which is why a broken feed looked identical to a working one. */
@@ -1625,6 +1807,8 @@ function render(passive){try{
   if(S.newVer&&S.newVer!==APP_VER)h+=' · <span style="color:var(--blue);cursor:pointer;font-weight:700" onclick="applyUpdate(true)">⬆ 更新到 '+esc(S.newVer)+'</span>';
   if(S.syncErr)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ 未同步：'+(SYNC_SHORT[S.syncErr.kind]||"原因不明")+' ›</span>';
   if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
+  /* the first part (報價 …) is not always there; then the line would start with " · " */
+  if(h.substr(pst0,3)===' · ')h=h.slice(0,pst0)+h.slice(pst0+3);
   h+='</div><div class="scr"><div class="cnt">';
 
   if(S.v==="home"){
@@ -1665,7 +1849,7 @@ function render(passive){try{
           var col=r.disp>=0?"var(--up)":"var(--down)";
           var rtw=r.cur==="TWD",rps=rtw?"NT$":"$",rf=rtw?fmTW:fm;
           h+='<div class="today-chip"><span class="today-chip-l"><span class="today-chip-sym">'+r.s+(r.closed?' <span style="font-size:9px;color:var(--dim)">已平</span>':'')+'</span>';
-          if(r.px!=null)h+='<span class="today-chip-px">'+rps+rf(r.px)+'</span>';
+          if(r.px!=null)h+='<span class="today-chip-px">'+rps+fmP(r.px,rtw)+'</span>';
           if(r.pct!=null)h+='<span class="today-chip-pct" style="color:'+col+'">('+(r.pct>=0?"+":"")+fm(r.pct)+'%)</span>';
           h+='</span><span class="today-chip-val" style="color:'+col+'">'+H((r.disp>=0?"+":"-")+dfmK(Math.abs(r.disp)))+'</span></div>';
         }
@@ -1734,7 +1918,7 @@ function render(passive){try{
         h+='<div class="hold-top">';
         h+='<div class="hold-logo" style="background:'+tCol+'22;color:'+tCol+'">'+(tw?'🇹🇼':x.s.charAt(0))+'</div>';
         h+='<div class="hold-mid"><div class="hold-sym">'+x.s+(tw?' <span class="badge tw-bg">台</span>':"")+((x.db>0)?' <span class="badge mgn-bg">融</span>':"")+'</div>';
-        h+='<div class="hold-meta">'+H(fmQ(x.q)+(tw?" 張":" 股"))+' @ '+ps+f(avgPS)+(p?' · 現 '+ps+f(p)+sessBadge(x.s):"")+'</div></div>';
+        h+='<div class="hold-meta"><span style="white-space:nowrap">'+H(fmQ(x.q)+(tw?" 張":" 股"))+' @ '+ps+fmP(avgPS,tw)+'</span>'+(p?' · <span style="white-space:nowrap">現 '+ps+fmP(p,tw)+sessBadge(x.s)+'</span>':"")+'</div></div>';
         h+='<div class="hold-right"><div class="hold-pnl" style="color:'+pc+'">'+H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):ps+f(x.c))+'</div>';
         h+='<div class="hold-pnlp" style="color:'+pc+'">'+H(rt!=null?(rt>=0?"+":"")+fm(rt)+"%":"輸入報價")+'</div></div>';
         h+='</div>';
@@ -1778,9 +1962,10 @@ function render(passive){try{
       h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">🏁</div><div style="font-weight:700;font-size:20px;margin-bottom:8px;letter-spacing:-0.4px">尚無平倉紀錄</div><div style="color:var(--muted);font-size:13px">賣出持倉後就會出現在這裡</div></div>';
     } else {
       if(!S.clF||!S.clF.res)S.clF={r:(S.clF&&S.clF.r)||"all",res:"all",syms:(S.clF&&S.clF.syms)||[],q:""};
-      var cFrom=filterFrom(S.clF.r),cfRes=S.clF.res,cfSyms=S.clF.syms||[];
+      var cFrom=filterFrom(S.clF.r),cTo=filterTo(S.clF.r),cfRes=S.clF.res,cfSyms=S.clF.syms||[];
       var clArr=[];for(var i=0;i<pf.cl.length;i++){var c0=pf.cl[i];
         if(cFrom&&(!c0.date||c0.date<cFrom))continue;
+        if(cTo&&c0.date>cTo)continue;
         if(cfRes==="win"&&c0.pnl<0)continue;
         if(cfRes==="lose"&&c0.pnl>=0)continue;
         if(cfSyms.length&&cfSyms.indexOf(c0.s)<0)continue;
@@ -1793,7 +1978,7 @@ function render(passive){try{
       if(cfRes==="win")cParts.push("已盈利");else if(cfRes==="lose")cParts.push("已虧損");
       if(cfSyms.length)cParts.push(cfSyms.length===1?cfSyms[0]:cfSyms.length+" 檔");
       var cLabel=cParts.length?cParts.join(" · "):"全部個股";
-      var cRanges=[["all","全部時間"],["today","今天"],["7d","過去7天"],["30d","過去30天"],["90d","過去90天"],["mtd","本月至今"],["ytd","年初至今"]];
+      var cRanges=BASE_RANGES.concat(yearRanges(pf.cl.map(function(x){return x.date}),S.clF.r));
       h+='<div style="display:flex;gap:8px;margin-bottom:10px">';
       h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.clF.r=this.value;render()">';
       for(var ri2=0;ri2<cRanges.length;ri2++)h+='<option value="'+cRanges[ri2][0]+'"'+(S.clF.r===cRanges[ri2][0]?" selected":"")+'>'+cRanges[ri2][1]+'</option>';
@@ -1801,26 +1986,27 @@ function render(passive){try{
       h+='<button class="inp" style="flex:1;padding:9px 10px;font-size:13px;text-align:left;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="set({modal:{type:\'clfilter\'}})"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+cLabel+'</span><span style="color:var(--muted);margin-left:6px">▾</span></button>';
       h+='</div>';
       h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
+      h+=closedStatsHtml(clArr,S.clF.r);
       if(!clArr.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
       for(var i=0;i<clArr.length;i++){var c=clArr[i].c,cIx=clArr[i].ix,cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=dtLabel(c),g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
         h+='<div class="hold" onclick="S.clIdx='+cIx+';set({v:\'cldet\'})"><div class="hold-top">';
         h+='<div class="hold-logo" style="background:'+(g?"var(--up-soft)":"var(--down-soft)")+';color:'+cl2+';font-size:14px">✓</div>';
-        h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(fmQ(cQty)+(tw?" 張":" 股"))+" @ "+ps+f(cPrice)+" · "+cDate+(c.um>QE?' · <span style="color:var(--amber)">⚠ 缺 '+H(fmQ(c.um))+(tw?' 張':' 股')+'買入</span>':'')+'</div></div>';
+        h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(fmQ(cQty)+(tw?" 張":" 股"))+" @ "+ps+fmP(cPrice,tw)+" · "+cDate+(c.um>QE?' · <span style="color:var(--amber)">⚠ 缺 '+H(fmQ(c.um))+(tw?' 張':' 股')+'買入</span>':'')+'</div></div>';
         h+='<div class="hold-right"><div class="hold-pnl" style="color:'+cl2+'">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>'+(c.cb>0?'<div class="hold-pnlp" style="color:'+cl2+'">'+H((c.pnl/c.cb*100>=0?"+":"")+fm(c.pnl/c.cb*100)+"%")+'</div>':"")+'</div></div></div>'}
     }
   } else {
     if(!S.trF)S.trF={r:"all",s:"all"};
     var tsyms={};for(var i=0;i<S.tr.length;i++){if(S.tr[i].symbol)tsyms[S.tr[i].symbol]=1}
     var tsymList=[];for(var tk in tsyms)tsymList.push(tk);tsymList.sort();
-    var tFrom=filterFrom(S.trF.r);
-    var tFiltered=[];for(var i=0;i<S.tr.length;i++){var t0=S.tr[i];if(tFrom&&(!t0.date||t0.date<tFrom))continue;if(S.trF.s!=="all"&&t0.symbol!==S.trF.s)continue;tFiltered.push(t0)}
+    var tFrom=filterFrom(S.trF.r),tTo=filterTo(S.trF.r);
+    var tFiltered=[];for(var i=0;i<S.tr.length;i++){var t0=S.tr[i];if(tFrom&&(!t0.date||t0.date<tFrom))continue;if(tTo&&t0.date>tTo)continue;if(S.trF.s!=="all"&&t0.symbol!==S.trF.s)continue;tFiltered.push(t0)}
     h+='<div class="section-label">交易紀錄 ('+tFiltered.length+'/'+S.tr.length+')</div>';
-    h+=filterBar('trF',S.trF,tsymList);
+    h+=filterBar('trF',S.trF,tsymList,yearRanges(S.tr.map(function(x){return x.date}),S.trF.r));
     if(!tFiltered.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
     var tIx={};for(var ti=0;ti<S.tr.length;ti++)tIx[S.tr[ti].id]=ti;
     var sorted=tFiltered.sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?1:-1;return(tIx[b.id]||0)-(tIx[a.id]||0)});
     for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
-      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+f(tPrice)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(tQty)+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
+      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+fmP(tPrice,tw)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(tQty)+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
       h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
       h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
   }
