@@ -143,6 +143,9 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 .dd-item:active{background:var(--surface)}
 .dd-icon{font-size:14px;width:22px;text-align:center;flex-shrink:0;color:var(--muted)}
 .dd-divider{height:0.5px;background:var(--border);margin:4px 8px}
+.bak-row{display:flex;gap:8px;margin-top:8px}
+.recovery p{color:var(--muted);font-size:14px;line-height:1.6;margin:8px 0}
+.recovery .bs{min-height:44px}
 .blur{filter:blur(8px);user-select:none;-webkit-user-select:none}
 .pst{display:flex;align-items:center;gap:6px;justify-content:center;padding:6px 16px;font-size:10px;color:var(--dim);flex-wrap:wrap;letter-spacing:0.3px}
 .pst .dot{width:5px;height:5px;border-radius:50%;background:var(--up);box-shadow:0 0 6px var(--up-glow)}
@@ -181,7 +184,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v10.0";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v10.1";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v12";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -205,7 +208,7 @@ var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
 
    費率來源與注意事項：
    - IBKR 按「每股」收費（Tiered $0.0035/股 + 交易所規費，低消 $0.35），不是按百分比。
-     0.0035% 是用你 2026-07-30 的實際成交反推的（NVDA 0.0035%、GOOG 0.0032%），
+     0.0035% 是由單筆成交反推的近似費率，
      只在「高價股 + 大單」時準確。低價股或小單的實際百分比會高很多，
      例如 $20 的股票約 0.033%、遇到 $0.35 低消時更高 —— 這種時候直接改「金額」欄比較準。
    - 台股手續費法定上限 0.1425%，買賣各收一次，多數券商有折扣（常見 5~6 折，低至 2.8 折），
@@ -246,6 +249,7 @@ var FEE_PRESETS=[
 
 var FK=ld("pt_fk",""),GS=ld("pt_gs","");
 var TK="pt_t9",PK="pt_p9",CK="pt_cur",HK="pt_hist9",DK="pt_del9",BK="pt_bak9",QE=1e-9;
+var UNDO_KEY="pt_undo10",DAY_PREFIX="pt_daily10_";
 function ytdKey(){return"pt_ytd_"+(new Date().getFullYear())}
 /* Last fee rate used per market, so 複委託 users don't retype 0.5% on every trade.
    Funding type is deliberately NOT remembered: a stale "margin" flag would silently
@@ -255,13 +259,15 @@ function defFee(cur){var d=feeDefs(),v=+d[cur];return(isFinite(v)&&v>0)?v:0}
 function saveDefFee(cur,r){var d=feeDefs();d[cur]=(+r||0);sv("pt_feed",d)}
 
 function ld(k,f){try{return JSON.parse(localStorage.getItem(k))||f}catch(e){return f}}
-function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
-function uid(){return Math.random().toString(36).slice(2,8)}
+function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+function uid(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+"-"+Math.random().toString(36).slice(2)}
 function fm(n){return n!=null&&!isNaN(n)?Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"—"}
 function fmTW(n){return n!=null&&!isNaN(n)?Math.round(n).toLocaleString():"—"}
 function fmK(n){if(n==null||isNaN(n))return"—";var a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+"M";if(a>=1e4)return(n/1e3).toFixed(1)+"K";if(a>=1e3)return(n/1e3).toFixed(2)+"K";return Math.round(n).toLocaleString()}
 function isTW(s){return/^\d{4,6}$/.test(s)}
-function trCmp(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?-1:1;if(a.action!==b.action)return a.action==="buy"?-1:1;return 0}
+function trCmp(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?-1:1;if(a.action!==b.action)return a.action==="buy"?-1:1;
+  if(a.fifoOrder!=null||b.fifoOrder!=null)return (a.fifoOrder==null?Infinity:a.fifoOrder)-(b.fifoOrder==null?Infinity:b.fifoOrder);
+  return 0}
 function fmQ(n){if(n==null||isNaN(n))return"—";return(Math.round(n*10000)/10000).toString()}
 function dtKey(t){return(t.date||"")+" "+(t.tm||"00:00")}
 function dtLabel(t){return(t.date||"")+(t.tm?" "+t.tm:"")}
@@ -289,6 +295,32 @@ var S={
   ytdBusy:false
 };
 var CHART_DATA=null;
+
+function backupData(){
+  return {app:APP_VER,at:new Date().toISOString(),trades:S.tr,prices:S.pr,history:ld(HK,[]),del:ld(DK,{})};
+}
+function backupDays(){
+  return Object.keys(localStorage).filter(function(k){
+    return /^pt_daily10_\d{4}-\d{2}-\d{2}$/.test(k);
+  }).sort().reverse();
+}
+function backupToday(){
+  if(!S.tr.length)return;
+  var day=localDate(),key=DAY_PREFIX+day;
+  if(S._backupDay===day)return;
+  try{
+    if(localStorage.getItem(key)===null){
+      if(!sv(key,backupData()))throw Error();
+    }
+    backupDays().slice(7).forEach(function(k){localStorage.removeItem(k)});
+    S._backupDay=day;S.backupError=false;
+  }catch(e){S.backupError=true}
+}
+backupToday();
+
+/* A deletion marker is authoritative even if the device closed before the
+   smaller trade list was written. GAS v12 uses the same rule. */
+(function(){var deleted=ld(DK,{});S.tr=S.tr.filter(function(t){return !t||!Object.prototype.hasOwnProperty.call(deleted,t.id)})})();
 
 /* Purge invalid trades on boot */
 (function(){var c=[],d=false;for(var i=0;i<S.tr.length;i++){var t=S.tr[i];if(t&&t.id&&t.symbol&&String(t.symbol).replace(/\s/g,"")!==""&&t.price!=null&&t.qty!=null&&t.qty>0){c.push(t)}else d=true}if(d){S.tr=c;sv(TK,S.tr)}})();
@@ -331,9 +363,13 @@ var CHART_DATA=null;
 
 function cfgOk(){return FK&&GS&&FK.length>5&&GS.length>10}
 function saveCfg(){var fk=document.getElementById("cfg_fk"),gs=document.getElementById("cfg_gs");if(fk)FK=fk.value.trim();if(gs)GS=gs.value.trim();sv("pt_fk",FK);sv("pt_gs",GS);if(cfgOk()){toast("設定已儲存 ✓");render()}else toast("請填入完整設定")}
-function clearCfg(){if(confirm("確定要清除所有設定和資料？\n這會刪除本機所有交易、報價、歷史紀錄。")){localStorage.clear();FK="";GS="";S.tr=[];S.pr={};S.ytd={};render()}}
+function clearCfg(){if(confirm("確定清除這台裝置的投資紀錄、設定及本機備份？")){
+  FK="";GS="";
+  Object.keys(localStorage).forEach(function(k){if(k.indexOf("pt_")===0)localStorage.removeItem(k)});
+  location.reload()
+}}
 
-function set(p){for(var k in p)S[k]=p[k];sv(TK,S.tr);render()}
+function set(p){for(var k in p)S[k]=p[k];render()}
 function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;var tn=document.querySelector(".toast");if(tn&&tn.parentNode)tn.parentNode.removeChild(tn)},2000);render()}
 function toDisp(v,cur){return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
 function ds(){return S.cur==="TWD"?"NT$":"$"}
@@ -341,7 +377,7 @@ function dfm(v){return S.cur==="TWD"?fmTW(v):fm(v)}
 function dfmK(v){return S.cur==="TWD"?"NT$"+fmK(v):"$"+fmK(v)}
 function H(v){return S.hide?'<span class="blur">'+v+'</span>':v}
 function gp(s){return S.pr[s]?S.pr[s].p:null}
-function esc(s){return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;")}
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function isHidden(sym){return S.hiddenSyms.indexOf(sym)>=0}
 function toggleHidePos(sym){var idx=S.hiddenSyms.indexOf(sym);if(idx>=0)S.hiddenSyms.splice(idx,1);else S.hiddenSyms.push(sym);sv("pt_hidden",S.hiddenSyms);render()}
 function setChartView(v){S.chartView=v;sv("pt_cv",v);render()}
@@ -393,21 +429,38 @@ function mergeCore(a,b){
   var hist=[];for(i=0;i<hk.length;i++)hist.push(hm[hk[i]]);
   return{tr:tr,del:del,pr:pr,hist:hist}}
 function trDesc(t){var tw=t.cur==="TWD";return t.symbol+" "+(t.action==="buy"?"買入":"賣出")+" "+fmQ(t.qty)+(tw?"張":"股")+" @"+(tw?"NT$":"$")+t.price+" · "+dtLabel(t)}
-function delTrades(ids){if(!ids||!ids.length)return;var D=ld(DK,{}),now=Date.now(),set1={},i;
-  for(i=0;i<ids.length;i++){D[ids[i]]=now;set1[ids[i]]=1}sv(DK,D);
-  S.tr=S.tr.filter(function(x){return!set1[x.id]});saveLocal();scheduleSync()}
+function delTrades(ids){
+  var selected=new Set(ids),rows=S.tr.filter(function(t){return selected.has(t.id)});
+  if(!rows.length)return false;
+  backupToday();
+  var deleted=ld(DK,{}),at=Date.now();
+  rows.forEach(function(t){deleted[t.id]=at});
+  var order=S.tr.slice().sort(trCmp).map(function(t){return t.id});
+  var previous=ld(UNDO_KEY,null);
+  if(!sv(UNDO_KEY,{at:at,tr:rows,order:order})){
+    alert("裝置無法保存刪除紀錄，交易已保留。請先匯出備份並檢查儲存空間。");return false;
+  }
+  if(!sv(DK,deleted)){
+    sv(UNDO_KEY,previous);alert("裝置無法保存刪除紀錄，交易已保留。");return false;
+  }
+  S.tr=S.tr.filter(function(t){return !selected.has(t.id)});
+  sv(TK,S.tr);scheduleSync();return true;
+}
 function scheduleSync(){if(!cfgOk())return;if(S._syT)clearTimeout(S._syT);S._syT=setTimeout(function(){S._syT=null;syncNow({silent:true})},4000)}
 /* Apply a merged dataset locally and report what changed relative to what we had. */
 function applyMerged(M){
   var bm={},am={},add=0,upd=0,rem=0,i,k;
   for(i=0;i<S.tr.length;i++)bm[S.tr[i].id]=JSON.stringify(S.tr[i]);
-  sv(BK,{at:Date.now(),tr:S.tr});                  /* one-step undo for the sync itself */
   var nt=cleanTr(M.tr);
   for(i=0;i<nt.length;i++){am[nt[i].id]=1;if(!bm[nt[i].id])add++;else if(bm[nt[i].id]!==JSON.stringify(nt[i]))upd++}
   for(k in bm){if(!am[k])rem++}
-  S.tr=nt;sv(TK,S.tr);sv(DK,M.del||{});
+  backupToday();
+  if(add||upd||rem)sv(BK,{at:Date.now(),tr:S.tr});
+  if(!sv(DK,M.del||{})||!sv(TK,nt))throw gasErr("data","裝置儲存空間不足，請先匯出備份");
+  S.tr=nt;
   var pr=M.pr||{};for(k in pr){var loc=S.pr[k],rm=pr[k];if(!rm)continue;if(!loc||!loc.at||!rm.at||rm.at>loc.at)S.pr[k]=rm}sv(PK,S.pr);
   if(M.hist&&M.hist.length)sv(HK,M.hist);
+  backupToday();
   return{add:add,upd:upd,rem:rem,n:nt.length}}
 /* Every Apps Script call made by sync and by the connection test goes through gasFetch, so
    a failure always carries a kind and a reason a person can act on -- instead of a bare
@@ -438,24 +491,33 @@ function trSig(arr){var m={},i,k,o=[];for(i=0;i<(arr||[]).length;i++){if(arr[i]&
   k=Object.keys(m).sort();for(i=0;i<k.length;i++)o.push(m[k[i]]);return o.join("\n")}
 function mapSig(obj,skip){var k=Object.keys(obj||{}).sort(),o=[],i;for(i=0;i<k.length;i++){if(k[i]!==skip)o.push(k[i]+"="+JSON.stringify(obj[k[i]]))}return o.join("\n")}
 function histMap(h){var m={},i;for(i=0;i<(h||[]).length;i++){if(h[i]&&h[i].d)m[h[i].d]=h[i]}return m}
-function needPush(remote,M){var today=new Date().toISOString().slice(0,10);
+function cloudBook(d){
+  var tr=parseJ(d.trades,[]),del=parseJ(d.del,{}),pr=parseJ(d.prices,{}),hist=parseJ(d.history,[]);
+  function record(x){return x!==null&&typeof x==="object"&&!Array.isArray(x)}
+  if(!Array.isArray(tr)||!record(del)||!record(pr)||!Array.isArray(hist))
+    throw gasErr("data","雲端資料格式異常，已停止合併，請檢查試算表");
+  var clean=cleanTr(tr);
+  if(clean.length!==tr.length)throw gasErr("data","部分雲端交易無法讀取，已停止合併");
+  return {tr:clean,del:del,pr:pr,hist:hist};
+}
+function needPush(remote,M){var today=localDate();
   return trSig(M.tr)!==trSig(remote.tr)||mapSig(M.del)!==mapSig(remote.del)||mapSig(histMap(M.hist),today)!==mapSig(histMap(remote.hist),today)}
 function syncNow(opts){
   var silent=!!(opts&&opts.silent);
   if(!GS){if(!silent)toast("請先設定 Google Apps Script URL");return}
   if(S.syncing)return;
   if(S._syRT){clearTimeout(S._syRT);S._syRT=null}
-  S.syncing=true;S.menu=false;if(!silent)render();
-  var local={tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])},serverMerged=false,readOnly=false;
+  S.syncing=true;if(!silent){S.menu=false;render()}
+  var serverMerged=false,readOnly=false,historyAtRead;
   gasFetch(GS+"?action=read&_t="+Date.now(),{cache:"no-store"},CLOUD_TIMEOUT_MS).then(function(d){
     var remote={tr:[],del:{},pr:{},hist:[]};
     if(d&&d.ok){
-      var rt=parseJ(d.trades,[]);
-      if(rt===null||!(rt instanceof Array))throw gasErr("data","雲端交易資料無法解析，已中止以免覆蓋");
-      remote={tr:cleanTr(rt),del:parseJ(d.del,{})||{},pr:parseJ(d.prices,{})||{},hist:parseJ(d.history,[])||[]};
+      remote=cloudBook(d);
       sv("pt_gasver",d.version||"v11 或更舊");
     }else if(d&&(d.msg==="no sheet"||d.empty))remote.empty=true;
     else throw gasErr("gas","讀取雲端失敗："+((d&&(d.e||d.msg))||"GAS 回 ok:false"));
+    var local={tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])};
+    historyAtRead=histMap(local.hist);
     var M=mergeCore(remote,local);
     /* Nothing of ours is missing from the cloud: a background sync stops at the read. Every write
        rewrites the whole sheet, and writing it on every focus/wake -- hundreds of times a day
@@ -467,11 +529,16 @@ function syncNow(opts){
       .then(function(w){
         if(!w||!w.ok)throw gasErr((w&&/忙碌/.test(w.e||""))?"busy":"gas","寫入雲端失敗："+((w&&w.e)||"GAS 回 ok:false"));
         sv("pt_lastpost",Date.now());
-        if(w.merged&&w.trades){var wt=parseJ(w.trades,null);if(wt instanceof Array){serverMerged=true;M={tr:wt,del:parseJ(w.del,M.del)||M.del,pr:parseJ(w.prices,M.pr)||M.pr,hist:parseJ(w.history,M.hist)||M.hist}}}
+        if(w.merged&&w.trades){M=cloudBook(w);serverMerged=true}
         return M})
   }).then(function(M){
-    var c=applyMerged(M);
+    /* The phone remains editable while GAS is writing. Replay current local
+       edits and deletions before accepting the response, then flush the delta. */
+    var changedHistory=ld(HK,[]).filter(function(h){return JSON.stringify(h)!==JSON.stringify(historyAtRead[h.d])});
+    var latest=mergeCore(M,{tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:changedHistory});
+    var followUp=needPush(M,latest),c=applyMerged(latest);
     S.syncing=false;S.synced=true;S.syncErr=null;S._syFail=0;gasOkNow();S.lastSync=Date.now();sv("pt_lastsync",S.lastSync);
+    if(followUp)scheduleSync();
     var parts=[];if(c.add)parts.push("新增 "+c.add);if(c.upd)parts.push("更新 "+c.upd);if(c.rem)parts.push("移除 "+c.rem);
     var msg="☁️ 已同步 · 共 "+c.n+" 筆"+(parts.length?"（"+parts.join("、")+"）":"");
     if(!serverMerged&&!readOnly)msg+=" · ⚠ GAS 未更新到 "+GAS_VER;
@@ -494,16 +561,16 @@ function cloudSave(){syncNow()}
 function cloudLoad(){syncNow()}
 
 /* ============================================================ Backup / merge-import */
-function exportBackup(){
-  var obj={app:APP_VER,at:new Date().toISOString(),trades:S.tr,prices:S.pr,history:ld(HK,[]),del:ld(DK,{})};
-  var txt=JSON.stringify(obj),d=new Date(),name="portfolio-backup-"+d.getFullYear()+("0"+(d.getMonth()+1)).slice(-2)+("0"+d.getDate()).slice(-2)+".json";
+function exportBackup(snapshot){
+  var obj=snapshot||backupData();
+  var txt=JSON.stringify(obj),name="portfolio-backup-"+localDate(new Date(obj.at))+".json";
   S.menu=false;
   try{
     var blob=new Blob([txt],{type:"application/json"});
     if(typeof File!=="undefined"&&navigator.canShare){var fl=new File([blob],name,{type:"application/json"});
       if(navigator.canShare({files:[fl]})){navigator.share({files:[fl],title:name}).catch(function(){});render();return}}
     var url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();
-    setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url)},1500);toast("已匯出 "+S.tr.length+" 筆交易");
+    setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url)},1500);toast("已匯出 "+obj.trades.length+" 筆交易");
   }catch(e){toast("匯出失敗")}
   render()}
 /* Accepts: a backup file, a bare trade array, the GAS read JSON, or a cell copied out of
@@ -512,21 +579,89 @@ function parseImport(txt){
   txt=String(txt||"").replace(/^\s+|\s+$/g,"");if(!txt)return null;
   if(txt.charAt(0)==="~")txt=txt.replace(/(^|\n)~/g,"$1").replace(/\n/g,"");
   var v=parseJ(txt,null);if(v==null)return null;
-  if(v instanceof Array)return{tr:cleanTr(v),del:{}};
-  if(typeof v==="object"){var t=v.trades;if(typeof t==="string")t=parseJ(t,null);if(t instanceof Array){var dl=v.del;if(typeof dl==="string")dl=parseJ(dl,{});return{tr:cleanTr(t),del:dl||{}}}}
-  return null}
+  var rows=Array.isArray(v)?v:parseJ(v.trades,null),deleted=parseJ(v.del,{});
+  if(!Array.isArray(rows)||!deleted||typeof deleted!=="object"||Array.isArray(deleted))return null;
+  if(!rows.every(validImportTrade))return null;
+  return {tr:cleanTr(rows.filter(function(t){return !Object.prototype.hasOwnProperty.call(deleted,t.id)})),del:{}}}
+function validSymbol(s){return typeof s==="string"&&/^[A-Za-z0-9.^_:=/-]+$/.test(s)&&!(s in Object.prototype)&&s!=="__proto__"}
+function validTradeId(id){return (typeof id==="string"||typeof id==="number")&&/^[A-Za-z0-9._:-]+$/.test(id)&&!(id in Object.prototype)}
+function validTradeDay(s){return typeof s==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&isFinite(Date.parse(s))&&dayShift(s,0)===s}
+function validImportTrade(t){
+  return t&&validTradeId(t.id)&&validSymbol(t.symbol)&&isFinite(+t.qty)&&+t.qty>0&&isFinite(+t.price)&&+t.price>0
+    &&(!t.date||validTradeDay(t.date))&&(!t.tm||/^([01]\d|2[0-3]):[0-5]\d$/.test(t.tm))
+    &&(!t.action||t.action==="buy"||t.action==="sell")&&(!t.cur||t.cur==="USD"||t.cur==="TWD")
+    &&(!t.lots||(Array.isArray(t.lots)&&t.lots.every(validTradeId)))
+    &&[t.fee,t.fr,t.u].every(function(v){return v==null||isFinite(+v)});
+}
+/* GAS v12 permanently honours deleted IDs. An explicit local recovery gets
+   a stable replacement ID so repeated previews and syncs stay idempotent. */
+function restoredId(id,deleted){
+  while(Object.prototype.hasOwnProperty.call(deleted,id))id=id+"-r";
+  return id;
+}
+function missingRows(src,recover){
+  var seen=new Set(S.tr.map(function(t){return String(t.id)})),deleted=ld(DK,{});
+  return src.tr.filter(function(t){
+    var id=recover?restoredId(t.id,deleted):t.id,key=String(id);
+    if(seen.has(key)||Object.prototype.hasOwnProperty.call(deleted,id))return false;
+    seen.add(key);return true;
+  });
+}
 function importPreview(obj){
-  var loc={},i,D=ld(DK,{}),add=[];for(i=0;i<S.tr.length;i++)loc[S.tr[i].id]=1;
-  for(i=0;i<obj.tr.length;i++){var t=obj.tr[i];if(!loc[t.id]&&!D[t.id])add.push(t)}
-  add.sort(trCmp);S.imp={src:obj,add:add};render()}
+  S.imp={src:obj,add:missingRows(obj,!!obj.recover).sort(trCmp)};render()}
 function importApply(){
   if(!S.imp)return;
-  /* local wins ties: an import can only fill gaps or bring a strictly newer edit */
-  var M=mergeCore({tr:S.imp.src.tr,del:S.imp.src.del},{tr:S.tr,del:ld(DK,{}),pr:S.pr,hist:ld(HK,[])});
-  var c=applyMerged(M);S.imp=null;S.modal=null;toast("已匯入：新增 "+c.add+" 筆");render();scheduleSync()}
+  var src=S.imp.src,recover=!!src.recover,deleted=ld(DK,{}),now=Date.now();
+  var approved=new Set(S.imp.add.map(function(t){return t.id}));
+  var add=missingRows(src,recover).filter(function(t){return approved.has(t.id)});
+  var next=S.tr.concat(add.map(function(t){
+    return recover?Object.assign({},t,{id:restoredId(t.id,deleted),u:now}):t;
+  }));
+  if(recover&&add.length){
+    var active=new Set(next.map(function(t){return t.id}));
+    /* The server keeps its own insertion order. Preserve FIFO for restored
+       transactions tied on date, time, symbol and side across both devices. */
+    var restoredGroups=new Set(),counts=new Map(),order=new Map();
+    function group(t){return t.symbol+"|"+dtKey(t)+"|"+t.action}
+    add.forEach(function(t){restoredGroups.add(group(t))});
+    (src.order||[]).forEach(function(id,i){order.set(restoredId(id,deleted),i)});
+    next.forEach(function(t){var g=group(t);counts.set(g,(counts.get(g)||0)+1)});
+    next=next.map(function(t){
+      var patch={},g=group(t);
+      if(restoredGroups.has(g)&&counts.get(g)>1&&order.has(t.id))patch.fifoOrder=order.get(t.id);
+      var changed=false,lots=Array.isArray(t.lots)&&t.lots.map(function(id){
+        var replacement=restoredId(id,deleted);
+        if(replacement!==id&&active.has(replacement)){changed=true;return replacement}
+        return id;
+      });
+      if(changed)patch.lots=lots;
+      if(!Object.keys(patch).length)return t;
+      patch.u=Math.max(now,(+t.u||0)+1);return Object.assign({},t,patch);
+    });
+  }
+  if(!storeTrades(next))return;
+  S.imp=null;S.modal=null;toast("已補回 "+add.length+" 筆交易");scheduleSync()}
 function restoreBak(){var b=ld(BK,null);if(!b||!b.tr){toast("沒有同步前的本機備份");return}
   S.modal={type:"import"};importPreview({tr:cleanTr(b.tr),del:{}})}
 
+function storeTrades(next){
+  backupToday();
+  if(!sv(TK,next)){alert("交易尚未儲存。請先匯出備份並檢查裝置的儲存空間。");return false}
+  S.tr=next;backupToday();return true;
+}
+function openRecovery(key){
+  var b=ld(key,null);
+  if(!b){toast("這份備份已不存在");return}
+  S.modal={type:"import"};
+  var rows=b.trades||b.tr;
+  importPreview({tr:rows,recover:true,order:b.order||rows.slice().sort(trCmp).map(function(t){return t.id})});
+}
+function readBackupFile(input){
+  var file=input.files&&input.files[0];if(!file)return;
+  var reader=new FileReader();
+  reader.onload=function(){var obj=parseImport(reader.result);if(obj)importPreview(obj);else alert("無法讀取這份交易備份，請確認選的是投資紀錄匯出的 JSON 檔。")};
+  reader.onerror=function(){alert("讀取檔案失敗，請重新選取。")};reader.readAsText(file);
+}
 function saveLocal(){sv(TK,S.tr);sv(PK,S.pr)}
 
 function trGross(t){var mul=(t.cur==="TWD")?1000:1;return(+t.price||0)*(+t.qty||0)*mul}
@@ -718,7 +853,7 @@ function usLastEnd(ms){var e=new Date(ms+etOffset(ms)*3600000),t=new Date(Date.U
 function liveQuoteAge(pf){var now=Date.now(),us=usMarketLive(),tw=twMarketLive(now),best=0,need=false,i,x,d,t;
   for(i=0;i<pf.op.length;i++){x=pf.op[i].s;if(!(isTW(x)?tw:us))continue;need=true;d=S.pr[x];if(!d)continue;t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}
   return need?(best?Math.round((now-best)/1000):1e9):null}
-function pollDelay(){return usMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
+function pollDelay(){return usMarketLive()||twMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
 
 function fetchPrices(silent){
   var pf=calc();if(!pf.op.length)return;
@@ -836,7 +971,7 @@ function fetchYtdQueue(pf){
 function snapHistory(){
   var hist=ld(HK,[]);
   var sorted=S.tr.slice().sort(trCmp);
-  var today=new Date().toISOString().slice(0,10);
+  var today=localDate();
   var pf=calc(),mvU=0,mvT=0,dbU=0,dbT=0;
   for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;
     if(tw){mvT+=mv;dbT+=(x.db||0)}else{mvU+=mv;dbU+=(x.db||0)}}
@@ -936,8 +1071,11 @@ function setFeeRate(r){readF();F._frT=true;F.fr=r;var e=document.getElementById(
 function setFFd(v){readF();F.fd=v;render()}
 function setFAct(v){readF();F.action=v;render()}
 function setFCur(v){readF();F.cur=v;if(!S.ed&&!F._frT)F.fr=defFee(v);render()}
-function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;
-  var sym=F.symbol.toUpperCase(),cur=isTW(sym)?"TWD":"USD";
+function submitF(){readF();
+  var sym=F.symbol.trim().toUpperCase(),cur=isTW(sym)?"TWD":"USD";
+  if(!validSymbol(sym)||!validTradeDay(F.date)||!(+F.price>0)||!(+F.qty>0)||!isFinite(fGross())){
+    alert("請確認代號、交易日期、價格及數量，價格和數量須大於零。");return;
+  }
   var t={id:F.id||uid(),type:F.type,symbol:sym,action:F.action,price:+F.price,qty:+F.qty,date:F.date,tm:F.tm||"",cur:cur};
   /* fr/fee/fd are written ONLY when meaningful. A zero-fee cash trade therefore serialises
      byte-identically to a pre-v8 trade, which keeps the cloud-sync payload small (the whole
@@ -947,11 +1085,16 @@ function submitF(){readF();if(!F.symbol||!F.price||!F.qty)return;
   if(fr>0)t.fr=fr;
   if(fee>0)t.fee=fee;
   if(F.action==="buy"&&F.fd==="margin")t.fd="margin";
-  saveDefFee(cur,fr);
-  t.u=Date.now();if(F.action==="sell"&&F.lots&&F.lots.length)t.lots=F.lots.slice();if(S.ed){var ntr=[];for(var i=0;i<S.tr.length;i++)ntr.push(S.tr[i].id===t.id?t:S.tr[i]);S.tr=ntr}else S.tr.push(t);S.ed=null;S.v="trades";saveLocal();toast("已儲存 ✓");render();scheduleSync();setTimeout(function(){fetchPrices(true)},500)}
+  t.u=Math.max(Date.now(),(+((S.ed||{}).u)||0)+1);if(F.action==="sell"&&F.lots&&F.lots.length)t.lots=F.lots.slice();
+  if(S.ed&&!findTr(t.id)){alert("這筆交易已被刪除，請返回交易清單。");return}
+  var next=S.ed?S.tr.map(function(old){return old.id===t.id?t:old}):S.tr.concat(t);
+  if(S.ed&&S.ed.fifoOrder!=null)t.fifoOrder=S.ed.fifoOrder;
+  if(!storeTrades(next))return;
+  saveDefFee(cur,fr);S.ed=null;S.v="trades";toast("已儲存 ✓");scheduleSync();setTimeout(function(){fetchPrices(true)},500)}
 function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S.det]={p:v,at:Date.now()};S.pv="";saveLocal();toast(S.det+" 報價已更新 ✓");render()}
 function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
-function deletePosition(sym){var ids=[];for(var i=0;i<S.tr.length;i++){if(S.tr[i].symbol===sym)ids.push(S.tr[i].id)}delTrades(ids);S.det=null;S.v="home";S.modal=null;saveLocal();toast(sym+" 已刪除");render()}
+function deletePosition(sym){var ids=S.tr.filter(function(t){return t.symbol===sym}).map(function(t){return t.id});
+  if(!delTrades(ids))return;S.det=null;S.v="home";S.modal=null;toast("已刪除，可至「備份與復原」補回")}
 function quickTrade(sym,act){S.ed=null;initF();F.symbol=sym;F.action=act;F.cur=isTW(sym)?"TWD":"USD";var qp=gp(sym);if(qp)F.price=qp;set({v:"form"})}
 function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.tr[i]}return null}
 
@@ -972,14 +1115,14 @@ function openLots(sym,excludeId,uptoDate){
     }}
   return out}
 function toggleLot(id){readF();if(!F.lots)F.lots=[];var ix=F.lots.indexOf(id);if(ix>=0)F.lots.splice(ix,1);else F.lots.push(id);
-  var sym=String(F.symbol).toUpperCase(),ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"23:59")),tot=0;
+  var sym=String(F.symbol).toUpperCase(),ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00")),tot=0;
   for(var i=0;i<F.lots.length;i++){for(var j=0;j<ls.length;j++){if(ls[j].id===F.lots[i]){tot+=ls[j].r;break}}}
   if(F.lots.length>0){F.qty=Math.round(tot*1e6)/1e6;tot=F.qty;var qEl=document.getElementById("f_q");if(qEl)qEl.value=tot}
   updTot()}
 function buildLotsHtml(){
   if(F.action!=="sell"||!F.symbol)return"";
   var sym=String(F.symbol).toUpperCase();
-  var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"23:59"));
+  var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00"));
   if(!ls.length)return'<div style="font-size:11px;color:var(--dim);margin-bottom:14px">💡 '+esc(sym)+' 目前沒有可平倉的買入批次</div>';
   if(!F.lots)F.lots=[];
   var avail={};for(var i=0;i<ls.length;i++)avail[ls[i].id]=1;
@@ -1048,7 +1191,7 @@ function pickSym(sym){readF();F.symbol=sym;var c=symCur(sym,F.cur);
    Left: the latest quote, one tap copies it into 價格. Right: for a sale, how many shares (張)
    are open at the trade's own date and time -- one tap sells them all; selling more than that
    is still allowed (the record may be incomplete), just flagged. For a buy: what is held. */
-function openQty(sym){var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"23:59")),t=0,i;for(i=0;i<ls.length;i++)t+=ls[i].r;return Math.round(t*1e6)/1e6}
+function openQty(sym){var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00")),t=0,i;for(i=0;i<ls.length;i++)t+=ls[i].r;return Math.round(t*1e6)/1e6}
 function fHintHtml(){
   var sym=String(F.symbol||"").toUpperCase();if(!sym)return'<div style="height:4px"></div>';
   var tw=symCur(sym,F.cur)==="TWD",ps=tw?"NT$":"$",un=tw?"張":"股",L="",R="";
@@ -1243,8 +1386,8 @@ function simOk(id,nd){var saved=S.tr,c=null;
   try{S.tr=S.tr.map(function(x){if(x.id!==id)return x;var y={};for(var k in x)y[k]=x[k];y.date=nd;return y});
     var pf=calc();for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].id===id){c=pf.cl[i];break}}}
   finally{S.tr=saved}return!!(c&&c.um<=QE&&!(c.lm&&c.lm.length))}
-function fixTradeDate(id,nd){var t=findTr(id);if(!t)return;t.date=nd;t.u=Date.now();saveLocal();scheduleSync();toast("已改為 "+nd+" ✓");render()}
-function devInfo(){try{var pr=document.createElement("div");pr.style.cssText="position:fixed;top:0;left:0;visibility:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)";
+function fixTradeDate(id,nd){var t=findTr(id);if(!t)return;if(!storeTrades(S.tr.map(function(x){return x===t?Object.assign({},t,{date:nd,u:Math.max(Date.now(),(+t.u||0)+1)}):x})))return;scheduleSync();toast("已改為 "+nd+" ✓");render()}
+function devInfo(){try{var pr=document.createElement("div");pr.style.cssText="position:absolute;top:0;left:0;visibility:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)";
   document.body.appendChild(pr);var cs=getComputedStyle(pr),tp=parseInt(cs.paddingTop,10)||0,bt=parseInt(cs.paddingBottom,10)||0;document.body.removeChild(pr);
   var sa=!!(navigator.standalone||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches));
   var vv=window.visualViewport,f=S._fit;
@@ -1371,26 +1514,44 @@ function renderHealth(){
   return h}
 function importModal(){
   var h='<div class="modal" onclick="if(event.target===this){S.imp=null;set({modal:null})}"><div class="card" style="padding:18px;max-width:420px;width:100%;background:var(--surface2);max-height:82vh;display:flex;flex-direction:column">';
-  h+='<div style="font-weight:700;font-size:15px;margin-bottom:6px">匯入合併</div>';
+  h+='<div style="font-weight:700;font-size:15px;margin-bottom:6px">'+(S.imp&&S.imp.src.recover?'復原交易':'匯入合併')+'</div>';
   if(!S.imp){
     h+='<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">貼上備份檔內容、試算表 A 欄內容，或整段交易 JSON。只會<b style="color:#fff">補入本機沒有的交易</b>，現有資料不會被覆蓋，已刪除的也不會被加回。</div>';
-    h+='<textarea id="imp_txt" class="inp" style="min-height:140px;font-size:11px;font-family:ui-monospace,monospace;resize:vertical" placeholder="[{&quot;id&quot;:...}] 或 {&quot;trades&quot;:...}"></textarea>';
+    h+='<label for="imp_file">選擇備份檔</label><input class="inp" type="file" id="imp_file" accept=".json,.txt,application/json,text/plain" onchange="readBackupFile(this)"><label for="imp_txt">或貼上備份內容</label>';
+    h+='<textarea id="imp_txt" class="inp" style="min-height:80px;font-size:16px;resize:vertical"></textarea>';
     h+='<div style="display:flex;gap:8px;margin-top:12px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bp" onclick="var o=parseImport(document.getElementById(\'imp_txt\').value);if(!o){toast(\'無法辨識內容\');return}importPreview(o)">預覽</button></div>';
   }else{
     var ad=S.imp.add;
     h+='<div style="font-size:12px;color:var(--muted);margin-bottom:10px">來源共 '+S.imp.src.tr.length+' 筆，其中 <b style="color:'+(ad.length?"var(--up)":"#fff")+'">'+ad.length+' 筆</b>是本機沒有的：</div>';
     h+='<div style="flex:1;overflow-y:auto;min-height:60px;border:1px solid var(--border);border-radius:10px;padding:4px 10px">';
     if(!ad.length)h+='<div style="font-size:12px;color:var(--dim);padding:14px 0;text-align:center">沒有需要補入的交易</div>';
-    for(var i=0;i<ad.length;i++)h+='<div style="font-size:12px;padding:7px 0;border-bottom:0.5px solid var(--border)">'+(ad[i].action==="buy"?'<span class="badge buy-bg">買入</span> ':'<span class="badge sell-bg">賣出</span> ')+H(trDesc(ad[i]))+'</div>';
-    h+='</div><div style="display:flex;gap:8px;margin-top:12px"><button class="bs" onclick="S.imp=null;render()">返回</button><button class="bp" '+(ad.length?"":"disabled")+' onclick="importApply()">補入 '+ad.length+' 筆</button></div>';
+    for(var i=0;i<ad.length;i++)h+='<div style="font-size:12px;padding:7px 0;border-bottom:0.5px solid var(--border)">'+H(esc(trDesc(ad[i])))+'</div>';
+    h+='</div><div style="display:flex;gap:8px;margin-top:12px"><button class="bs" onclick="S.imp=null;S.modal=null;render()">取消</button><button class="bp" '+(ad.length?"":"disabled")+' onclick="importApply()">補入 '+ad.length+' 筆</button></div>';
   }
   return h+'</div></div>'}
+
+function recoveryPage(){
+  var h='<div class="hdr"><button class="hib" aria-label="返回總覽" onclick="set({v:\'home\'})">‹</button><b>備份與復原</b><span class="hib"></span></div><div class="scr recovery"><div class="cnt">';
+  var undo=ld(UNDO_KEY,null),days=[];
+  try{days=backupDays()}catch(e){S.backupError=true}
+  h+='<div class="card"><b>上一次刪除</b>';
+  if(undo&&undo.tr&&missingRows({tr:undo.tr},true).length){
+    h+='<p>'+new Date(undo.at).toLocaleString("zh-TW")+' 刪除 '+undo.tr.length+' 筆</p><button class="bs" onclick="openRecovery(UNDO_KEY)">檢視並復原</button>';
+  }else h+='<p>目前沒有可復原的刪除紀錄。</p>';
+  h+='</div><div class="section-label">這台裝置的每日備份</div><div class="card"><p>每天首次開啟且有交易時自動備份，保留最近 7 個有備份的日期。點選日期可預覽並補回交易。</p>';
+  if(S.backupError)h+='<p style="color:var(--amber)">本機備份無法儲存。請先從選單匯出備份，並檢查裝置空間。</p>';
+  if(!days.length)h+='<p>目前沒有每日備份。</p>';
+  days.forEach(function(key){var day=key.slice(DAY_PREFIX.length);
+    h+='<div class="bak-row"><button class="bs" onclick="openRecovery(\''+key+'\')">'+day+'</button><button class="bs" aria-label="匯出 '+day+'" onclick="exportBackup(ld(\''+key+'\',null))">匯出檔案</button></div>';
+  });
+  h+='</div></div></div>';if(S.modal)h+=importModal();return h;
+}
 
 function gasCode(){
   return "var SHEET_NAME = 'Data';\nvar GAS_VERSION = 'v12';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'ping') return jsonOut({ok:true, msg:'pong', version:GAS_VERSION});\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  if (action === 'ytd') return getYtd(e.parameter.sym, e.parameter.mkt, e.parameter.year);\n  if (action === 'quotes') return getQuotes(e.parameter.syms, e.parameter.mkt);\n  if (action === 'diag') return getDiag(e.parameter.sym, e.parameter.mkt);\n  if (action === 'probe') return getProbe(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  var lock = LockService.getScriptLock();\n  try { lock.waitLock(25000); } catch (le) { return jsonOut({ok:false, e:'雲端忙碌中，請稍後再試'}); }\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var sh = dataSheet();\n    var R = readColsN(sh), cur = R.s;\n    var curTr = pj(cur[0], []);\n    if (curTr === null) return jsonOut({ok:false, e:'雲端交易資料無法解析，已中止寫入以免覆蓋'});\n    var A = {tr: curTr, pr: pj(cur[1], {}) || {}, hist: pj(cur[2], []) || [], del: pj(cur[3], {}) || {}};\n    var B = {tr: pj(d.trades, []) || [], pr: pj(d.prices, {}) || {}, hist: pj(d.history, []) || [], del: pj(d.del, {}) || {}};\n    var M = mergeCore(A, B);\n    var out = [JSON.stringify(M.tr), JSON.stringify(M.pr), JSON.stringify(M.hist), JSON.stringify(M.del)];\n    /* v12: only columns whose content changed are written, and history only when something other\n       than today's snapshot changed (or today has no row yet) -- about once a day. Rewriting all\n       four columns on every sync is what made the old spreadsheet slow to open. */\n    var skip = {};\n    if (sameHistoryButToday(A.hist, M.hist)) skip[2] = 1;\n    var wrote = writeChanged(sh, out, cur, R.n, skip);\n    return jsonOut({ok:true, merged:true, version:GAS_VERSION, wrote:wrote, n:M.tr.length, trades:out[0], prices:out[1], history:out[2], del:out[3]});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n  finally { lock.releaseLock(); }\n}\n\n/* Storage: column A = trades, B = prices, C = history, D = deletions. Each value is split\n   into 40k-char chunks down the column (a Sheets cell holds at most 50k), every chunk\n   prefixed with ~ so Sheets never reads one as a number, date or formula. The old\n   single-cell layout (A1/B1/C1) reads back unchanged. */\nfunction dataSheet() {\n  var ss = SpreadsheetApp.getActiveSpreadsheet();\n  return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n}\nfunction pj(v, f) {\n  if (v === undefined || v === null || v === '') return f;\n  if (typeof v !== 'string') return v;\n  try { return JSON.parse(v); } catch (x) { return null; }\n}\nfunction readColsN(sh) {\n  var out = ['', '', '', ''], n = [0, 0, 0, 0];\n  if (!sh) return {s: out, n: n};\n  var lr = sh.getLastRow();\n  if (lr < 1) return {s: out, n: n};\n  var v = sh.getRange(1, 1, lr, 4).getValues();\n  for (var c = 0; c < 4; c++) {\n    var acc = '';\n    for (var r = 0; r < v.length; r++) {\n      var x = v[r][c];\n      if (x === '' || x === null) break;\n      x = String(x);\n      if (x.charAt(0) === '~') x = x.substring(1);\n      acc += x;\n      n[c] = r + 1;\n    }\n    out[c] = acc;\n  }\n  return {s: out, n: n};\n}\nfunction readCols(sh) { return readColsN(sh).s; }\n/* Writes only the columns whose text differs from what is stored, each split into 40k-char\n   chunks down its own column (a cell holds at most 50k), every chunk prefixed with ~ so Sheets\n   never reads it as a number, date or formula. Rows a shorter column no longer uses are cleared\n   in that column only. Nothing changed = nothing written. Returns the letters written, e.g. \"AB\". */\nfunction writeChanged(sh, cols, old, oldN, skip) {\n  var CH = 40000, wrote = '', c, i;\n  for (c = 0; c < cols.length; c++) {\n    if (skip[c] || String(cols[c]) === String(old[c])) continue;\n    var str = String(cols[c]), p = [];\n    for (i = 0; i < str.length; i += CH) p.push(['~' + str.substring(i, i + CH)]);\n    if (!p.length) p.push(['~']);\n    sh.getRange(1, c + 1, p.length, 1).setValues(p);\n    if (oldN[c] > p.length) sh.getRange(p.length + 1, c + 1, oldN[c] - p.length, 1).clearContent();\n    wrote += 'ABCD'.charAt(c);\n  }\n  if (wrote) SpreadsheetApp.flush();\n  return wrote;\n}\n/* true when the two histories differ at most in today's entry AND the stored one already has\n   today -- then the history column is left alone until something else in it changes. */\nfunction sameHistoryButToday(stored, merged) {\n  var today = new Date().toISOString().slice(0, 10), a = {}, b = {}, has = false, i, k;\n  for (i = 0; i < stored.length; i++) { var x = stored[i]; if (!x || !x.d) continue; if (x.d === today) has = true; else a[x.d] = JSON.stringify(x); }\n  if (!has) return false;\n  for (i = 0; i < merged.length; i++) { var y = merged[i]; if (y && y.d && y.d !== today) b[y.d] = JSON.stringify(y); }\n  for (k in a) if (a[k] !== b[k]) return false;\n  for (k in b) if (a[k] !== b[k]) return false;\n  return true;\n}\n\nfunction readData() {\n  try {\n    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:true, empty:true, version:GAS_VERSION, trades:'[]', prices:'{}', history:'[]', del:'{}'});\n    var c = readCols(sh);\n    return jsonOut({ok:true, version:GAS_VERSION, trades:c[0] || '[]', prices:c[1] || '{}', history:c[2] || '[]', del:c[3] || '{}'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\n/* YTD baseline = previous year's LAST trading day CLOSE price.\n   v6: removed Stooq (was hanging GAS via UrlFetchApp). Now Yahoo first, TWSE backup.\n   Each branch wrapped in independent try-catch so one slow source can't kill the others. */\nfunction getYtd(sym, mkt, year) {\n  var y = parseInt(year) || (new Date()).getFullYear();\n  var prevY = y - 1;\n  var tried = [];\n\n  // ---------- 1. Yahoo Finance (works for both US and TW with .TW suffix) ----------\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var p1 = Math.floor(Date.UTC(prevY, 11, 20) / 1000);\n    var p2 = Math.floor(Date.UTC(y, 0, 5) / 1000);\n    var yurl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym)\n      + '?period1=' + p1 + '&period2=' + p2 + '&interval=1d';\n    var opts = {\n      muteHttpExceptions: true,\n      headers: {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}\n    };\n    var yresp = UrlFetchApp.fetch(yurl, opts);\n    var ycode = yresp.getResponseCode();\n    if (ycode === 200) {\n      var body = JSON.parse(yresp.getContentText());\n      var result = body && body.chart && body.chart.result && body.chart.result[0];\n      var ts = result && result.timestamp;\n      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];\n      var closes = quote && quote.close;\n      var cutoff = Math.floor(Date.UTC(y, 0, 1) / 1000);\n      var bestPrice = 0, bestTs = 0;\n      if (ts && closes) {\n        for (var i = 0; i < ts.length; i++) {\n          if (ts[i] < cutoff && closes[i] != null && closes[i] > 0) {\n            if (ts[i] > bestTs) { bestTs = ts[i]; bestPrice = closes[i]; }\n          }\n        }\n      }\n      if (bestPrice > 0) {\n        var dateStr = new Date(bestTs * 1000).toISOString().substring(0, 10);\n        return jsonOut({ok:true, price:bestPrice, source:'yahoo', baselineDate:dateStr, ticker:yhSym, tried:tried});\n      }\n      tried.push({src:'yahoo', reason:'no close before Jan 1'});\n    } else {\n      tried.push({src:'yahoo', reason:'http '+ycode});\n    }\n  } catch(err) { tried.push({src:'yahoo', reason:'err: '+err.message}); }\n\n  // ---------- 2. TWSE STOCK_DAY (TW only) ----------\n  if (mkt === 'tw') {\n    try {\n      var turl = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=' + prevY + '1201&stockNo=' + sym;\n      var tresp = UrlFetchApp.fetch(turl, {muteHttpExceptions:true});\n      var tcode = tresp.getResponseCode();\n      if (tcode === 200) {\n        var r = JSON.parse(tresp.getContentText());\n        if (r.stat === 'OK' && r.data && r.data.length) {\n          var lastRow = r.data[r.data.length - 1];\n          var closeP = parseFloat(String(lastRow[6]).replace(/,/g,''));\n          if (closeP > 0) return jsonOut({ok:true, price:closeP, source:'twse', baselineDate:String(lastRow[0]), ticker:sym, tried:tried});\n        }\n        tried.push({src:'twse', reason:'no data: '+(r.stat||'unknown')});\n      } else {\n        tried.push({src:'twse', reason:'http '+tcode});\n      }\n    } catch(err) { tried.push({src:'twse', reason:'err: '+err.message}); }\n  }\n\n  return jsonOut({ok:false, price:0, tried:tried});\n}\n\n/* Batch live quotes incl. pre-market / post-market, via Yahoo chart API.\n   fetchAll() runs every symbol in parallel so one client request covers the whole portfolio. */\nfunction getQuotes(syms, mkt) {\n  try {\n    var list = String(syms || '').split(',');\n    var reqs = [], names = [];\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    for (var i = 0; i < list.length; i++) {\n      var s = String(list[i]).replace(/\\s/g, '');\n      if (!s) continue;\n      var yhSym = (mkt === 'tw' && s.indexOf('.') < 0) ? (s + '.TW') : s;\n      reqs.push({\n        url: 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d',\n        muteHttpExceptions: true,\n        headers: {'User-Agent': ua}\n      });\n      names.push(s);\n    }\n    if (!reqs.length) return jsonOut({ok:true, q:{}});\n    var resps = UrlFetchApp.fetchAll(reqs);\n    var out = {};\n    for (var j = 0; j < resps.length; j++) {\n      try {\n        if (resps[j].getResponseCode() !== 200) continue;\n        var parsed = parseChart(resps[j].getContentText());\n        if (parsed) out[names[j]] = parsed;\n      } catch (e2) {}\n    }\n    return jsonOut({ok:true, q:out});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\nfunction parseChart(txt) {\n  var body = JSON.parse(txt);\n  var r = body && body.chart && body.chart.result && body.chart.result[0];\n  if (!r) return null;\n  var meta = r.meta || {};\n  var ts = r.timestamp || [];\n  var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n  var closes = (q && q.close) || [];\n  var last = 0, lastTs = 0;\n  for (var i = closes.length - 1; i >= 0; i--) {\n    if (closes[i] != null && closes[i] > 0) { last = closes[i]; lastTs = ts[i] || 0; break; }\n  }\n  var reg = meta.regularMarketPrice || 0;\n  var regTs = meta.regularMarketTime || 0;\n  var prev = meta.chartPreviousClose || meta.previousClose || 0;\n  var sess = 'closed';\n  var cp = meta.currentTradingPeriod || {};\n  var nowS = Math.floor(new Date().getTime() / 1000);\n  if (cp.pre && nowS >= cp.pre.start && nowS < cp.pre.end) sess = 'pre';\n  else if (cp.regular && nowS >= cp.regular.start && nowS < cp.regular.end) sess = 'regular';\n  else if (cp.post && nowS >= cp.post.start && nowS < cp.post.end) sess = 'post';\n  else if (cp.pre && cp.post) {\n    /* Outside pre/regular/post = the 8pm-4am ET overnight window (Blue Ocean ATS).\n       Only call it live if the newest bar is genuinely recent; otherwise it is just\n       a stale post-market close and we must not pretend it is an overnight quote. */\n    sess = (lastTs > 0 && (nowS - lastTs) < 1800) ? 'overnight' : 'closed';\n  }\n\n  /* v7 FRESHNESS FIX -- this was the bug that made the app show 15-minute-old prices\n     while the header claimed the data was live. Yahoo's 1-minute bar array lags\n     meta.regularMarketPrice, routinely by 10-15 minutes, and the old code always read\n     the last bar. meta is the freshest field in the payload, so prefer it whenever its\n     timestamp is at least as new as the newest bar. Never do this in pre/post/overnight:\n     there meta.regularMarketPrice is the STALE regular close while the bars carry the\n     live extended-hours print, so overriding would make things worse, not better. */\n  var src = 'bar';\n  if (sess === 'regular' && reg > 0 && regTs >= lastTs) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) return null;\n  return {p:last, rp:reg, prev:prev, sess:sess, ts:lastTs, src:src, age:(nowS - lastTs)};\n}\n\n/* Diagnostic: shows exactly what Yahoo returns for one symbol, with the newest bars\n   labelled in both US Eastern and Taipei time. Use it to confirm whether overnight\n   (Blue Ocean) bars are present: ?action=diag&sym=TSLA */\nfunction getDiag(sym, mkt) {\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d';\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': ua}});\n    var code = resp.getResponseCode();\n    if (code !== 200) return jsonOut({ok:false, http:code});\n    var txt = resp.getContentText();\n    var body = JSON.parse(txt);\n    var r = body && body.chart && body.chart.result && body.chart.result[0];\n    if (!r) return jsonOut({ok:false, e:'no result'});\n    var meta = r.meta || {}, ts = r.timestamp || [];\n    var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n    var closes = (q && q.close) || [];\n    var tail = [];\n    for (var i = closes.length - 1; i >= 0 && tail.length < 10; i--) {\n      if (closes[i] == null) continue;\n      var d = new Date(ts[i] * 1000);\n      tail.push({\n        et: Utilities.formatDate(d, 'America/New_York', 'MM-dd HH:mm'),\n        tw: Utilities.formatDate(d, 'Asia/Taipei', 'MM-dd HH:mm'),\n        p: closes[i]\n      });\n    }\n    var cp = meta.currentTradingPeriod || {};\n    function per(x) {\n      if (!x) return '-';\n      return Utilities.formatDate(new Date(x.start*1000), 'Asia/Taipei', 'MM-dd HH:mm')\n        + ' ~ ' + Utilities.formatDate(new Date(x.end*1000), 'Asia/Taipei', 'MM-dd HH:mm') + ' (TW)';\n    }\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: yhSym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      regularMarketPrice: meta.regularMarketPrice,\n      chartPreviousClose: meta.chartPreviousClose,\n      periods: {pre: per(cp.pre), regular: per(cp.regular), post: per(cp.post)},\n      totalBars: closes.length,\n      newestBars: tail,\n      parsed: parseChart(txt)\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\n/* --- Yahoo v7 quote probe ---\n   The chart endpoint carries no Blue Ocean overnight bars, but yahoo.com itself shows an\n   Overnight price, so the data may sit on the quote endpoint instead. That endpoint needs\n   a cookie + crumb. This probe fetches it and dumps the field names so we can see whether an\n   overnight field actually exists, before wiring anything into the live price path.\n   Usage: ?action=probe&sym=TSLA */\nvar YH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n\nfunction yahooAuth() {\n  var cache = CacheService.getScriptCache();\n  var cr = cache.get('yh_crumb'), ck = cache.get('yh_cookie');\n  if (cr && ck) return {crumb: cr, cookie: ck};\n  var r1 = UrlFetchApp.fetch('https://fc.yahoo.com', {muteHttpExceptions:true, followRedirects:false, headers:{'User-Agent': YH_UA}});\n  var h = r1.getAllHeaders();\n  var sc = h['Set-Cookie'] || h['set-cookie'];\n  if (!sc) return null;\n  if (Array.isArray(sc)) sc = sc[0];\n  var cookie = String(sc).split(';')[0];\n  var r2 = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': cookie}});\n  var crumb = r2.getContentText().replace(/\\s/g, '');\n  if (!crumb || crumb.length > 40) return null;\n  cache.put('yh_crumb', crumb, 3600);\n  cache.put('yh_cookie', cookie, 3600);\n  return {crumb: crumb, cookie: cookie};\n}\n\nfunction getProbe(sym) {\n  try {\n    sym = sym || 'TSLA';\n    var a = yahooAuth();\n    if (!a) return jsonOut({ok:false, step:'auth', e:'could not obtain cookie/crumb'});\n    var url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + encodeURIComponent(sym) + '&crumb=' + encodeURIComponent(a.crumb);\n    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': a.cookie}});\n    var code = r.getResponseCode();\n    var txt = r.getContentText();\n    if (code !== 200) return jsonOut({ok:false, step:'quote', http:code, body:txt.substring(0, 400)});\n    var body = JSON.parse(txt);\n    var q = body && body.quoteResponse && body.quoteResponse.result && body.quoteResponse.result[0];\n    if (!q) return jsonOut({ok:false, step:'parse', body:txt.substring(0, 400)});\n    var keys = [], matched = {};\n    for (var k in q) {\n      keys.push(k);\n      if (/night|pre|post|extend/i.test(k)) matched[k] = q[k];\n    }\n    keys.sort();\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: sym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      marketState: q.marketState,\n      regularMarketPrice: q.regularMarketPrice,\n      regularMarketPreviousClose: q.regularMarketPreviousClose,\n      sessionFields: matched,\n      allKeys: keys\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n"+"\n"+mergeCore.toString()+"\n";
 }
 function copyGAS(){var code=gasCode();if(navigator.clipboard){navigator.clipboard.writeText(code).then(function(){toast("已複製程式碼 ✓")}).catch(function(){fallbackCopy(code)})}else fallbackCopy(code)}
-function fallbackCopy(t){var a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.left="-9999px";document.body.appendChild(a);a.select();try{document.execCommand("copy");toast("已複製程式碼 ✓")}catch(e){toast("複製失敗，請手動選取")}document.body.removeChild(a)}
+function fallbackCopy(t){var a=document.createElement("textarea");a.value=t;a.style.position="absolute";a.style.left="-9999px";document.body.appendChild(a);a.select();try{document.execCommand("copy");toast("已複製程式碼 ✓")}catch(e){toast("複製失敗，請手動選取")}document.body.removeChild(a)}
 
 function renderSetup(){
   var h='<div class="hdr"><div class="brand"><span class="brand-dot"></span><span class="brand-name">Portfolio</span></div>';
@@ -1603,6 +1764,7 @@ function render(passive){try{
   var app=document.getElementById("app"),pf=calc(),h="";
   if(!cfgOk()||S.v==="setup"){fin(renderSetup());return}
   if(S.v==="health"){fin(renderHealth());return}
+  if(S.v==="recovery"){fin(recoveryPage());return}
 
   /* === Position detail === */
   if(S.v==="det"&&S.det){
@@ -1690,8 +1852,8 @@ function render(passive){try{
       h+='</div>';
       h+='<button onclick="event.stopPropagation();set({modal:{type:\'deltrade\',id:\''+t.id+'\',sym:\''+t.symbol+'\',desc:\''+(t.action==="buy"?"買入":"賣出")+' '+fmQ(t.qty)+un+' @'+ps+fmP(t.price,tw)+'\'}})" style="background:0;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:4px">🗑</button></div>'}
     h+='<div style="margin-top:20px;display:flex;flex-direction:column;gap:8px"><button onclick="toggleHidePos(\''+S.det+'\');set({v:\'home\',det:null})" style="padding:12px;border-radius:14px;border:1px solid var(--border2);background:0;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;width:100%">'+(isHidden(S.det)?"👁 取消隱藏":"👁‍🗨 隱藏（不計入總覽）")+'</button><button class="bd" onclick="set({modal:{type:\'delpos\',sym:\''+S.det+'\'}})">🗑 刪除持倉</button></div></div></div>';
-    if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">要隱藏還是刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.5">💡 建議使用<span style="color:var(--up)">隱藏</span>：不計入總覽但保留資料，可隨時恢復<br><span style="color:var(--down)">刪除</span>：永久移除所有交易紀錄，會影響資產曲線</div><div style="display:flex;flex-direction:column;gap:8px"><button class="bp" style="width:100%" onclick="toggleHidePos(\''+S.modal.sym+'\');S.modal=null;S.det=null;S.v=\'home\';saveLocal();toast(\'已隱藏 '+S.modal.sym+'\');render()">👁‍🗨 隱藏（推薦）</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">🗑 永久刪除</button><button class="bs" style="width:100%" onclick="set({modal:null})">取消</button></div></div></div>';
-    if(S.modal&&S.modal.type==="deltrade")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">刪除此筆交易？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px">'+S.modal.desc+'</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="delTrades([S.modal.id]);S.modal=null;toast(\'已刪除\');render()">刪除</button></div></div></div>';
+    if(S.modal&&S.modal.type==="delpos")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">要隱藏還是刪除 '+S.modal.sym+'？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.5">💡 建議使用<span style="color:var(--up)">隱藏</span>：不計入總覽但保留資料，可隨時恢復<br><span style="color:var(--down)">刪除</span>：整檔交易將從持倉移除，可至「備份與復原」補回最近一次刪除</div><div style="display:flex;flex-direction:column;gap:8px"><button class="bp" style="width:100%" onclick="toggleHidePos(\''+S.modal.sym+'\');S.modal=null;S.det=null;S.v=\'home\';saveLocal();toast(\'已隱藏 '+S.modal.sym+'\');render()">👁‍🗨 隱藏（推薦）</button><button class="bd" onclick="deletePosition(\''+S.modal.sym+'\')">🗑 刪除整檔交易</button><button class="bs" style="width:100%" onclick="set({modal:null})">取消</button></div></div></div>';
+    if(S.modal&&S.modal.type==="deltrade")h+='<div class="modal" onclick="if(event.target===this)set({modal:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:8px;font-size:15px">刪除此筆交易？</div><div style="font-size:13px;color:var(--muted);margin-bottom:16px">'+S.modal.desc+'</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({modal:null})">取消</button><button class="bd" onclick="if(delTrades([S.modal.id])){S.modal=null;toast(\'已刪除，可至「備份與復原」補回\')}">刪除</button></div></div></div>';
     fin(h);return}
 
   /* === Closed-position detail === */
@@ -1783,6 +1945,7 @@ function render(passive){try{
     h+='<button class="dd-item" onclick="syncNow()"><span class="dd-icon">'+(S.syncing?"⏳":"⇅")+'</span><span>雲端同步（合併）</span></button>';
     h+='<button class="dd-item" onclick="S.menu=false;set({v:\'health\'})"><span class="dd-icon">🩺</span><span>資料健檢</span></button>';
     h+='<button class="dd-item" onclick="exportBackup()"><span class="dd-icon">💾</span><span>匯出備份</span></button>';
+    h+='<button class="dd-item" onclick="S.menu=false;set({v:\'recovery\'})"><span class="dd-icon">↶</span><span>備份與復原</span></button>';
     h+='<button class="dd-item" onclick="S.menu=false;S.imp=null;set({modal:{type:\'import\'}})"><span class="dd-icon">📥</span><span>匯入合併</span></button>';
     var ls=S.lastSync||ld("pt_lastsync",0);
     h+='<div style="padding:4px 12px 2px;font-size:10px;color:var(--dim)">'+(ls?"上次同步 "+new Date(ls).toLocaleString("zh-TW"):"尚未同步")+'</div>';
@@ -2011,8 +2174,7 @@ function render(passive){try{
       h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
   }
   h+='</div></div>';h+=nav(S.v);
-  if(S.toast)h+='<div class="toast">'+S.toast+'</div>';
-  if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:12px;font-size:15px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="delTrades([S.del.id]);S.del=null;toast(\'已刪除\');render()">刪除</button></div></div></div>';
+  if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:12px;font-size:15px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="if(delTrades([S.del.id])){S.del=null;toast(\'已刪除，可至「備份與復原」補回\')}">刪除</button></div></div></div>';
   if(S.modal&&S.modal.type==="import")h+=importModal();
   if(S.modal&&S.modal.type==="clfilter"){
     var cfR=S.clF.res||"all",cfN=(S.clF.syms||[]).length;
@@ -2036,6 +2198,7 @@ function render(passive){try{
 function fin(h){
   var vk=S.v+"|"+(S.det||"")+"|"+(S.clIdx!=null?S.clIdx:"");
   var oscr=document.querySelector(".scr"),st=(oscr&&S._vk===vk)?oscr.scrollTop:0;
+  if(S.toast)h+='<div class="toast" role="status">'+esc(S.toast)+'</div>';
   document.getElementById("app").innerHTML=h;
   S._vk=vk;
   var nscr=document.querySelector(".scr");
@@ -2065,7 +2228,7 @@ setTimeout(function(){fetchPrices(true)},2000);
 /* Adaptive polling. The old fixed 30-minute interval could not show a live price by
    construction: poll every minute while a US session is open, back off to 5 minutes
    once everything is closed. */
-function schedulePoll(){if(S._pt)clearTimeout(S._pt);S._pt=setTimeout(function(){if(!document.hidden)fetchPrices(true);schedulePoll()},pollDelay())}
+function schedulePoll(){if(S._pt)clearTimeout(S._pt);S._pt=setTimeout(function(){if(!document.hidden){backupToday();fetchPrices(true)}schedulePoll()},pollDelay())}
 schedulePoll();
 /* Background tabs and installed PWAs get their timers frozen by the OS, so returning to
    the app used to show whatever was cached before it was backgrounded, with nothing to
@@ -2125,7 +2288,7 @@ function fitViewport(){try{
   if(de.style.height!==want){de.style.height=want;b.style.height=want}}catch(e){}}
 function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
-  resetPageScroll();fitViewport();
+  backupToday();resetPageScroll();fitViewport();
   var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync();checkUpdate(false)}
 document.addEventListener("visibilitychange",onWake);
 window.addEventListener("online",function(){S._lastTry=0;fetchPrices(true);if(cfgOk()&&!S.syncing&&(S.syncErr||S._syRT))syncNow({silent:true});else maybeSync()});
