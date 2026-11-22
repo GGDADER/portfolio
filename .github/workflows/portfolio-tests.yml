@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["index.html", "tests/**", ".github/workflows/portfolio-tests.yml"]
+    paths: ["index.html", "Code.gs", "tests/**", ".github/workflows/portfolio-tests.yml"]
   pull_request:
-    paths: ["index.html", "tests/**", ".github/workflows/portfolio-tests.yml"]
+    paths: ["index.html", "Code.gs", "tests/**", ".github/workflows/portfolio-tests.yml"]
 
 permissions:
   contents: read

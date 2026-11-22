@@ -184,8 +184,8 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v10.2";        /* 本檔版本，改動時請一併更新 */
-var GAS_VER="v12";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
+var APP_VER="v10.3";        /* 本檔版本，改動時請一併更新 */
+var GAS_VER="v13";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
    時間到就強制解鎖，確保按鈕永遠有反應。 */
@@ -264,6 +264,12 @@ function uid(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():Date.
 function fm(n){return n!=null&&!isNaN(n)?Number(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"—"}
 function fmTW(n){return n!=null&&!isNaN(n)?Math.round(n).toLocaleString():"—"}
 function fmK(n){if(n==null||isNaN(n))return"—";var a=Math.abs(n);if(a>=1e6)return(n/1e6).toFixed(1)+"M";if(a>=1e4)return(n/1e3).toFixed(1)+"K";if(a>=1e3)return(n/1e3).toFixed(2)+"K";return Math.round(n).toLocaleString()}
+function isJP(s){return /^[0-9][A-Z0-9][0-9][A-Z0-9]\.T$/i.test(s)}
+function moneySign(cur){return cur==="JPY"?"¥":cur==="TWD"?"NT$":"$"}
+function formSymbol(){
+  var sym=String(F.symbol||"").trim().toUpperCase();
+  return F.cur==="JPY"&&sym&&!isJP(sym)?sym+".T":sym;
+}
 function isTW(s){return/^\d{4,6}$/.test(s)}
 function trCmp(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?-1:1;if(a.action!==b.action)return a.action==="buy"?-1:1;
   if(a.fifoOrder!=null||b.fifoOrder!=null)return (a.fifoOrder==null?Infinity:a.fifoOrder)-(b.fifoOrder==null?Infinity:b.fifoOrder);
@@ -282,7 +288,7 @@ function nowHM(){var d=new Date();return("0"+d.getHours()).slice(-2)+":"+("0"+d.
 
 var S={
   tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,del:null,
-  pv:"",pLoading:false,lastUp:null,lastFail:null,pBusy:false,_lastTry:0,_pt:null,pGen:0,pStart:0,_pw:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),
+  pv:"",pLoading:false,lastUp:null,lastFail:null,pBusy:false,_lastTry:0,_pt:null,pGen:0,pStart:0,_pw:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),jpyRate:ld("pt_usdjpy",null),
   hide:ld("pt_hide",false),synced:false,syncing:false,
   chartRange:"1M",chartCustom:null,chartView:ld("pt_cv","mv"),
   hiddenSyms:ld("pt_hidden",[]),
@@ -342,7 +348,7 @@ backupToday();
       var t=trs[j];if(t.date>dt)break;
       var tw=t.cur==="TWD",mul=tw?1000:1,sign=t.action==="buy"?1:-1;
       var cost=t.price*t.qty*mul*sign;
-      if(tw)ciT+=cost;else ciU+=cost;
+      if(tw)ciT+=cost;else if(t.cur==="JPY"){if(!S.jpyRate)return;ciU+=cost/S.jpyRate}else ciU+=cost;
     }
     hist[i].ci_u=ciU;hist[i].ci_t=ciT;hist[i].ci=ciU+ciT/r;
   }
@@ -371,7 +377,7 @@ function clearCfg(){if(confirm("確定清除這台裝置的投資紀錄、設定
 
 function set(p){for(var k in p)S[k]=p[k];render()}
 function toast(m){if(S.tt)clearTimeout(S.tt);S.toast=m;S.tt=setTimeout(function(){S.toast=null;var tn=document.querySelector(".toast");if(tn&&tn.parentNode)tn.parentNode.removeChild(tn)},2000);render()}
-function toDisp(v,cur){return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
+function toDisp(v,cur){if(cur==="JPY")v=S.jpyRate>0?v/S.jpyRate:NaN;return S.cur==="TWD"?(cur==="TWD"?v:v*S.rate):(cur==="TWD"?v/S.rate:v)}
 function ds(){return S.cur==="TWD"?"NT$":"$"}
 function dfm(v){return S.cur==="TWD"?fmTW(v):fm(v)}
 function dfmK(v){return S.cur==="TWD"?"NT$"+fmK(v):"$"+fmK(v)}
@@ -385,8 +391,13 @@ function sessName(s){return s==="pre"?"盤前":s==="post"?"盤後":s==="overnigh
 /* sess is a snapshot taken when the quote was fetched, so it only describes the market
    right now if the quote itself is recent. Anything older than an hour is treated as
    session-unknown rather than silently claiming the market is still open. */
-function liveSess(d){if(!d||!d.sess||d.sess==="closed")return"";if(!d.at||Date.now()-d.at>3600000)return"";return d.sess}
-function sessBadge(sym){var d=S.pr[sym];if(!d||!liveSess(d))return"";
+function liveSess(d){if(!d||!d.sess||d.sess==="closed")return"";if(d.sess==="overnight"&&(!overnightStart(Date.now())||d.src!=="y-night"||!(d.qt*1000>=overnightStart(Date.now()))))return"";if(!d.at||Date.now()-d.at>3600000)return"";return d.sess}
+function sessBadge(sym){var d=S.pr[sym];
+  if(overnightStart(Date.now())&&!isJP(sym)&&!isTW(sym)){
+    var actual=d&&d.src==="y-night"&&d.qt*1000>=overnightStart(Date.now());
+    var stamp=d&&d.qt?new Date(d.qt*1000).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):"";
+    return ' <span class="badge">'+(actual?"夜盤":"最後報價")+" "+stamp+(actual&&d.delay?" · 來源延遲 "+d.delay+" 分":"")+'</span>';
+  }if(!d||!liveSess(d))return"";
   if(d.sess==="pre")return' <span class="badge" style="background:var(--blue-soft);color:var(--blue)">盤前</span>';
   if(d.sess==="post")return' <span class="badge" style="background:var(--purple-soft);color:var(--purple)">盤後</span>';
   if(d.sess==="overnight")return' <span class="badge" style="background:var(--amber-soft);color:var(--amber)">夜盤</span>';
@@ -406,7 +417,7 @@ function parseJ(v,f){if(v==null||v==="")return f;if(typeof v!=="string")return v
 function cleanTr(arr){var out=[];if(!arr||!arr.length)return out;
   for(var i=0;i<arr.length;i++){var t=arr[i];if(!t||!t.id)continue;if(!t.symbol||String(t.symbol).replace(/\s/g,"")==="")continue;
     if(!t.action)t.action="buy";t.price=+t.price||0;t.qty=+t.qty||0;if(t.qty<=0)continue;
-    if(!t.date)t.date="2025-01-01";if(!t.cur)t.cur=isTW(t.symbol)?"TWD":"USD";if(!t.type)t.type="stock";out.push(t)}
+    if(!t.date)t.date="2025-01-01";if(!t.cur)t.cur=symCur(t.symbol,"USD");if(!t.type)t.type="stock";out.push(t)}
   return out}
 function mergeCore(a,b){
   a=a||{};b=b||{};
@@ -428,7 +439,7 @@ function mergeCore(a,b){
   hk.sort();if(hk.length>400)hk=hk.slice(hk.length-400);
   var hist=[];for(i=0;i<hk.length;i++)hist.push(hm[hk[i]]);
   return{tr:tr,del:del,pr:pr,hist:hist}}
-function trDesc(t){var tw=t.cur==="TWD";return t.symbol+" "+(t.action==="buy"?"買入":"賣出")+" "+fmQ(t.qty)+(tw?"張":"股")+" @"+(tw?"NT$":"$")+t.price+" · "+dtLabel(t)}
+function trDesc(t){var tw=t.cur==="TWD";return t.symbol+" "+(t.action==="buy"?"買入":"賣出")+" "+fmQ(t.qty)+(tw?"張":"股")+" @"+moneySign(t.cur)+t.price+" · "+dtLabel(t)}
 function delTrades(ids){
   var selected=new Set(ids),rows=S.tr.filter(function(t){return selected.has(t.id)});
   if(!rows.length)return false;
@@ -458,7 +469,7 @@ function applyMerged(M){
   if(add||upd||rem)sv(BK,{at:Date.now(),tr:S.tr});
   if(!sv(DK,M.del||{})||!sv(TK,nt))throw gasErr("data","裝置儲存空間不足，請先匯出備份");
   S.tr=nt;
-  var pr=M.pr||{};for(k in pr){var loc=S.pr[k],rm=pr[k];if(!rm)continue;if(!loc||!loc.at||!rm.at||rm.at>loc.at)S.pr[k]=rm}sv(PK,S.pr);
+  var pr=M.pr||{};for(k in pr){var loc=S.pr[k],rm=pr[k];if(!rm||(loc&&loc.qt&&rm.qt&&rm.qt<loc.qt))continue;if(!loc||!loc.at||!rm.at||rm.at>loc.at)S.pr[k]=rm}sv(PK,S.pr);
   if(M.hist&&M.hist.length)sv(HK,M.hist);
   backupToday();
   return{add:add,upd:upd,rem:rem,n:nt.length}}
@@ -589,7 +600,7 @@ function validTradeDay(s){return typeof s==="string"&&/^\d{4}-\d{2}-\d{2}$/.test
 function validImportTrade(t){
   return t&&validTradeId(t.id)&&validSymbol(t.symbol)&&isFinite(+t.qty)&&+t.qty>0&&isFinite(+t.price)&&+t.price>0
     &&(!t.date||validTradeDay(t.date))&&(!t.tm||/^([01]\d|2[0-3]):[0-5]\d$/.test(t.tm))
-    &&(!t.action||t.action==="buy"||t.action==="sell")&&(!t.cur||t.cur==="USD"||t.cur==="TWD")
+    &&(!t.action||t.action==="buy"||t.action==="sell")&&(!t.cur||t.cur==="USD"||t.cur==="TWD"||(t.cur==="JPY"&&isJP(t.symbol)))
     &&(!t.lots||(Array.isArray(t.lots)&&t.lots.every(validTradeId)))
     &&[t.fee,t.fr,t.u].every(function(v){return v==null||isFinite(+v)});
 }
@@ -762,15 +773,15 @@ function gasOkNow(){S._gasFail=0;S._gasCoolUntil=0;if(GS&&ld("pt_gs_ok","")!==GS
 function gasCooling(){return!!(S._gasCoolUntil&&Date.now()<S._gasCoolUntil)}
 function fetchOne(sym){
   if(isTW(sym)){if(!GS)return Promise.resolve(null);return fetchT(GS+"?action=twprice&sym="+sym+"&_t="+Date.now(),{cache:"no-store"},GAS_TIMEOUT_MS).then(function(r){return r.json()}).then(function(d){if(d&&d.ok)gasOkNow();return d.ok&&d.price>0?{p:d.price,pc:d.yesterday||null,t:Math.floor(Date.now()/1000)}:null}).catch(function(){gasTrip();return null})}
-  if(!FK)return Promise.resolve(null);
-  return fetchT("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
+  if(!FK||isJP(sym))return Promise.resolve(null);
+  return fetchT("https://finnhub.io/api/v1/quote?symbol="+sym+"&token="+FK,{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){return d.c>0&&(!overnightStart(Date.now())||d.t>0)?{p:d.c,pc:d.pc||null,t:d.t||Math.floor(Date.now()/1000)}:null}).catch(function(){return null})
 }
-function batchQuotes(syms){
+function batchQuotes(syms,night){
   if(!GS||!syms.length)return Promise.resolve({});
   /* _t cache-buster + no-store: Apps Script answers via a redirect to
      script.googleusercontent.com with cacheable headers, and an identical URL every
      minute is exactly what a browser (iOS PWA especially) will serve from cache. */
-  return fetchT(GS+"?action=quotes&syms="+encodeURIComponent(syms.join(","))+"&mkt=us&_t="+Date.now(),{cache:"no-store"},BATCH_TIMEOUT_MS)
+  return fetchT(GS+"?action=quotes&syms="+encodeURIComponent(syms.join(","))+"&mkt=us"+(night?"&night=1":"")+"&_t="+Date.now(),{cache:"no-store"},BATCH_TIMEOUT_MS)
     .then(function(r){return r.json()})
     .then(function(d){if(d&&d.ok){gasOkNow();return d.q||{}}if(d&&/too many|quota|次數/i.test(String(d.e||"")))gasTrip();return{}})
     .catch(function(){gasTrip();return{}})
@@ -778,7 +789,7 @@ function batchQuotes(syms){
 function fetchRate(){
   return fetchT("https://open.er-api.com/v6/latest/USD",{},RATE_TIMEOUT_MS)
     .then(function(r){return r.json()})
-    .then(function(d){if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}})
+    .then(function(d){if(d.rates&&Number.isFinite(d.rates.JPY)&&d.rates.JPY>0){S.jpyRate=d.rates.JPY;sv("pt_usdjpy",S.jpyRate)}if(d.rates&&d.rates.TWD){S.rate=d.rates.TWD;sv("pt_rate",S.rate)}})
     .catch(function(){})
 }
 
@@ -838,6 +849,20 @@ function etCloseBefore(ms){var e=new Date(ms+etOffset(ms)*3600000),t=prevWeekday
 function twCloseBefore(ms){var e=new Date(ms+8*3600000),hm=e.getUTCHours()*60+e.getUTCMinutes(),t=new Date(Date.UTC(e.getUTCFullYear(),e.getUTCMonth(),e.getUTCDate()));
   if(t.getUTCDay()===0||t.getUTCDay()===6||hm<540)t=prevWeekday(t);
   t=prevWeekday(t);return Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),13,30)-8*3600000}
+function overnightStart(ms){
+  var et=new Date(ms+etOffset(ms)*3600000),day=et.getUTCDay(),h=et.getUTCHours();
+  if(!(h>=20&&day<=4)&&!(h<4&&day>=1&&day<=5))return 0;
+  var base=Date.UTC(et.getUTCFullYear(),et.getUTCMonth(),et.getUTCDate()-(h<4?1:0),20);
+  return base-etOffset(base)*3600000;
+}
+function jpSession(ms){
+  var d=new Date(ms+9*3600000),day=d.getUTCDay(),m=d.getUTCHours()*60+d.getUTCMinutes();
+  return day>0&&day<6&&((m>=540&&m<690)||(m>=750&&m<930));
+}
+function jpCloseBefore(ms){
+  var d=new Date(ms+9*3600000),prev=prevWeekday(new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate())));
+  return prev.getTime()+6.5*3600000;
+}
 function usMarketLive(){var et=new Date(Date.now()+etOffset(Date.now())*3600000),d=et.getUTCDay(),h=et.getUTCHours()+et.getUTCMinutes()/60;if(d===0||d===6)return false;return h>=4&&h<20}
 function twMarketLive(ms){var e=new Date((ms||Date.now())+8*3600000),d=e.getUTCDay(),hm=e.getUTCHours()*60+e.getUTCMinutes();return d>=1&&d<=5&&hm>=540&&hm<815}
 /* The most recent TWSE close (13:30 Taipei, weekdays) at or before ms. */
@@ -850,13 +875,17 @@ function usLastEnd(ms){var e=new Date(ms+etOffset(ms)*3600000),t=new Date(Date.U
   var g=Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),20,0);return g-etOffset(g)*3600000}
 /* Staleness only matters for a market that is trading right now: at night the TW quote is
    simply the close, and on a weekend every quote is. */
-function liveQuoteAge(pf){var now=Date.now(),us=usMarketLive(),tw=twMarketLive(now),best=0,need=false,i,x,d,t;
-  for(i=0;i<pf.op.length;i++){x=pf.op[i].s;if(!(isTW(x)?tw:us))continue;need=true;d=S.pr[x];if(!d)continue;t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}
+function liveQuoteAge(pf){var now=Date.now(),us=usMarketLive()||overnightStart(now),tw=twMarketLive(now),best=0,need=false,i,x,d,t;
+  for(i=0;i<pf.op.length;i++){x=pf.op[i].s;if(!(isJP(x)?jpSession(now):isTW(x)?tw:us))continue;need=true;d=S.pr[x];if(!d)continue;t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}
   return need?(best?Math.round((now-best)/1000):1e9):null}
-function pollDelay(){return usMarketLive()||twMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
+function pollDelay(){return usMarketLive()||overnightStart(Date.now())||jpSession(Date.now())||twMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
 
 function fetchPrices(silent){
-  var pf=calc();if(!pf.op.length)return;
+  var pf=calc();if(!pf.op.length){
+    if(S.tr.some(function(t){return t.cur==="JPY"})&&Date.now()-(S._fxTry||0)>300000){
+      S._fxTry=Date.now();fetchRate().then(function(){snapHistory();render(true)});
+    }return;
+  }
   var now=Date.now();
   if(S.pBusy){
     /* Only an automatic poll defers, and only while the running refresh still looks
@@ -867,21 +896,26 @@ function fetchPrices(silent){
      one pass after the close), US quotes while the 04:00-20:00 ET window is open (plus one
      pass after it ends), and nothing from GAS while it is cooling down. A tap on 🔄 still
      refreshes everything. */
+  var night=overnightStart(now);
   var skip={},cool=silent&&gasCooling(),att=S._att||(S._att={}),liveAtt=false;
   if(silent){
     /* A market that has closed is fetched once more to pick up its final price, then left
        alone. If that pass fails, or a symbol cannot be priced at all, it is retried hourly
        rather than on every poll. For US the final price must come from Yahoo (via GAS):
        Finnhub only knows the 16:00 close, not the after-hours last trade. */
-    var twEnd=twLastClose(now),usEnd=usLastEnd(now),usLive=usMarketLive(),twLive=twMarketLive(now),usNeed=usLive,any=false,i0,s0,d0,tried;
+    var twEnd=twLastClose(now),usEnd=usLastEnd(now),usLive=usMarketLive(),twLive=twMarketLive(now),usNeed=usLive||night,any=false,i0,s0,d0,tried;
     for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;d0=S.pr[s0];
+      if(isJP(s0)){
+        if(cool||(!jpSession(now)&&d0&&now-(att[s0]||d0.at||0)<300000))skip[s0]=1;
+        continue;
+      }
       if(isTW(s0)){tried=(att[s0]||0)>twEnd&&now-att[s0]<3600000;
         if(cool||(!twLive&&((d0&&d0.p&&(d0.at||0)>twEnd+60000)||tried)))skip[s0]=1}
       else if(!usLive&&!((att[s0]||0)>usEnd&&now-att[s0]<3600000)&&(!d0||!d0.p||(d0.src!=="y"&&d0.src!=="y-stale")||(d0.at||0)<usEnd+60000))usNeed=true}
-    for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;if(!isTW(s0)&&!usNeed)skip[s0]=1;if(!skip[s0]){any=true;if(isTW(s0)?twLive:usLive)liveAtt=true}}
+    for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;if(!isJP(s0)&&!isTW(s0)&&!usNeed)skip[s0]=1;if(!skip[s0]){any=true;if(isJP(s0)?jpSession(now):isTW(s0)?twLive:(usLive||night))liveAtt=true}}
     /* Nothing can have changed. Still record today's snapshot and fill any missing YTD
        baseline, and a failure from earlier no longer applies to prices that are final. */
-    if(!any){S._lastTry=now;if(!S.lastUp||(S.lastFail&&S.lastFail>S.lastUp))S.lastUp=new Date();snapHistory();fetchYtdQueue(pf);return}
+    if(!any&&(S.jpyRate||!pf.op.some(function(x){return x.cur==="JPY"}))){S._lastTry=now;if(!S.lastUp||(S.lastFail&&S.lastFail>S.lastUp))S.lastUp=new Date();snapHistory();fetchYtdQueue(pf);return}
   }
   var gen=++S.pGen;
   S.pBusy=true;S.pStart=now;S._lastTry=now;
@@ -908,16 +942,24 @@ function fetchPrices(silent){
 
   /* Rate and quotes are independent, so they run together instead of one after the other.
      Neither ever rejects (both swallow their own errors), so Promise.all can't short out. */
-  Promise.all([fetchRate(),cool?Promise.resolve({}):batchQuotes(usSyms)]).then(function(res){
+  Promise.all([fetchRate(),cool?Promise.resolve({}):batchQuotes(usSyms,night)]).then(function(res){
     if(!alive())return null;
     var bq=res[1]||{},np={};for(var k in S.pr)np[k]=S.pr[k];
     var miss=[],ok=0,stale=0;
     for(var i=0;i<pf.op.length;i++){var pos=pf.op[i],b=bq[pos.s];if(skip[pos.s])continue;
       /* A quote is only usable if it is genuinely recent. While a session is live,
          anything older than 5 minutes is stale data dressed up as a price. */
+      var cached=np[pos.s],usNight=night&&pos.cur==="USD"&&pos.tp!=="crypto";
+      if(b&&b.src==="y-night"&&(!usNight||!(b.ts*1000>=night&&b.ts*1000<=Date.now())))b=null;
+      if(usNight&&b&&b.sess==="overnight"&&b.src!=="y-night"){
+        b=Object.assign({},b,{sess:"closed"});
+      }
+      if(cached&&cached.qt&&b&&b.ts&&cached.qt>b.ts){ok++;stale++;continue}
+      if(usNight&&cached&&cached.qt&&!b)continue;
+      if(isJP(pos.s)&&b){b=Object.assign({},b,{sess:jpSession(now)?"regular":"closed"})}
       var live=b&&b.sess&&b.sess!=="closed";
       var fresh=b&&b.p>0&&(!live||!b.ts||(nowSec()-b.ts)<300);
-      if(fresh){np[pos.s]={p:b.p,pc:b.prev||null,rp:b.rp||null,sess:b.sess||null,qt:b.ts||null,at:Date.now(),src:b.src||"y"};ok++}
+      if(fresh||(usNight&&b&&b.src==="y-night"&&b.sess==="overnight")){np[pos.s]={p:b.p,pc:b.prev||null,rp:b.rp||null,sess:b.sess||null,qt:b.ts||null,at:Date.now(),src:b.src||"y",delay:b.delay||0};ok++}
       else miss.push({pos:pos,b:b})}
     /* Fallbacks now run in PARALLEL. The old code chained them with a 400ms sleep each, so
        one slow symbol delayed every symbol behind it and stretched a refresh well past the
@@ -925,6 +967,7 @@ function fetchPrices(silent){
     var jobs=[];
     for(var m=0;m<miss.length;m++){(function(mi){
       /* The batch call just failed and started a cooldown: don't follow it with TW calls. */
+      if(night&&mi.pos.cur==="USD"&&np[mi.pos.s]&&np[mi.pos.s].src==="y-night"&&!mi.b)return;
       if(silent&&isTW(mi.pos.s)&&gasCooling())return;
       att[mi.pos.s]=Date.now();
       jobs.push(fetchOne(mi.pos.s).then(function(r){
@@ -969,18 +1012,19 @@ function fetchYtdQueue(pf){
 }
 
 function snapHistory(){
+  if(!S.jpyRate&&S.tr.some(function(t){return t.cur==="JPY"}))return;
   var hist=ld(HK,[]);
   var sorted=S.tr.slice().sort(trCmp);
   var today=localDate();
   var pf=calc(),mvU=0,mvT=0,dbU=0,dbT=0;
   for(var i=0;i<pf.op.length;i++){var x=pf.op[i];if(isHidden(x.s))continue;var p=gp(x.s),tw=x.cur==="TWD",mv=p?p*x.q*(tw?1000:1):x.c;
-    if(tw){mvT+=mv;dbT+=(x.db||0)}else{mvU+=mv;dbU+=(x.db||0)}}
+    if(tw){mvT+=mv;dbT+=(x.db||0)}else{var fx=x.cur==="JPY"?S.jpyRate:1;mvU+=mv/fx;dbU+=(x.db||0)/fx}}
   var ciU=0,ciT=0;
   for(var i=0;i<sorted.length;i++){var t=sorted[i];if(isHidden(t.symbol))continue;
     var tw=t.cur==="TWD",mul=tw?1000:1,g=t.price*t.qty*mul,fe=trFee(t);
     /* Cash actually moved: a buy costs gross+fee, a sell returns gross-fee. */
     var flow=t.action==="buy"?(g+fe):-(g-fe);
-    if(tw)ciT+=flow;else ciU+=flow}
+    if(tw)ciT+=flow;else ciU+=t.cur==="JPY"?flow/S.jpyRate:flow}
   var rate=S.rate||32.5,entry={d:today,u:mvU,t:mvT,r:rate,ci_u:ciU,ci_t:ciT,ci:ciU+ciT/rate,db_u:dbU,db_t:dbT};
   var found=false;for(var i=0;i<hist.length;i++){if(hist[i].d===today){hist[i]=entry;found=true;break}}
   if(!found)hist.push(entry);
@@ -1045,7 +1089,7 @@ function fGross(){var tw=F.cur==="TWD";return(+F.price||0)*(+F.qty||0)*(tw?1000:
 function fFee(){var v=+F.fee;return(isFinite(v)&&v>0)?v:0}
 function syncDefFee(){if(S.ed||F._frT)return;var d=defFee(F.cur);if((+F.fr||0)!==d){F.fr=d;var e=document.getElementById("f_fr");if(e)e.value=d?d:""}}
 function paintTotals(){
-  var tw=F.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+  var tw=F.cur==="TWD",ps=moneySign(F.cur),f=tw?fmTW:fm;
   var g=fGross(),fe=fFee(),net=(F.action==="buy")?(g+fe):(g-fe);
   var e1=document.getElementById("ftot");if(e1)e1.textContent=ps+f(g);
   var e2=document.getElementById("ffee");if(e2)e2.textContent=(fe>0?"-":"")+ps+f(fe);
@@ -1070,9 +1114,15 @@ function onFeeAmt(){readF();F._frT=true;var g=fGross(),a=fFee();F.fr=(g>0)?(a/g*
 function setFeeRate(r){readF();F._frT=true;F.fr=r;var e=document.getElementById("f_fr");if(e)e.value=r?r:"";onFeeRate()}
 function setFFd(v){readF();F.fd=v;render()}
 function setFAct(v){readF();F.action=v;render()}
-function setFCur(v){readF();F.cur=v;if(!S.ed&&!F._frT)F.fr=defFee(v);render()}
+function setFCur(v){readF();if(v!=="JPY"&&isJP(F.symbol))F.symbol=F.symbol.slice(0,-2);
+  F.cur=v;if(!S.ed&&!F._frT)F.fr=defFee(v);
+  F.fee=fGross()*(+F.fr||0)/100;render()}
 function submitF(){readF();
-  var sym=F.symbol.trim().toUpperCase(),cur=isTW(sym)?"TWD":"USD";
+  var sym=formSymbol(),cur=symCur(sym,F.cur);
+  if(cur==="JPY"&&!isJP(sym)){alert("日股請輸入四碼代號，例如 7203 或 130A。");return}
+  if(S.tr.some(function(t){return t.id!==F.id&&t.symbol===sym&&t.cur!==cur})){
+    alert("這個代號已有不同幣別的交易，請先確認原交易的市場。");return;
+  }
   if(!validSymbol(sym)||!validTradeDay(F.date)||!(+F.price>0)||!(+F.qty>0)||!isFinite(fGross())){
     alert("請確認代號、交易日期、價格及數量，價格和數量須大於零。");return;
   }
@@ -1095,7 +1145,7 @@ function savePr(){var v=parseFloat(S.pv);if(!S.det||isNaN(v)||v<=0)return;S.pr[S
 function toggleHide(){S.hide=!S.hide;sv("pt_hide",S.hide);render()}
 function deletePosition(sym){var ids=S.tr.filter(function(t){return t.symbol===sym}).map(function(t){return t.id});
   if(!delTrades(ids))return;S.det=null;S.v="home";S.modal=null;toast("已刪除，可至「備份與復原」補回")}
-function quickTrade(sym,act){S.ed=null;initF();F.symbol=sym;F.action=act;F.cur=isTW(sym)?"TWD":"USD";var qp=gp(sym);if(qp)F.price=qp;set({v:"form"})}
+function quickTrade(sym,act){S.ed=null;initF();F.symbol=sym;F.action=act;F.cur=symCur(sym,"USD");var qp=gp(sym);if(qp)F.price=qp;set({v:"form"})}
 function findTr(id){for(var i=0;i<S.tr.length;i++){if(S.tr[i].id===id)return S.tr[i]}return null}
 
 /* Remaining open buy lots for a symbol, replaying all other trades' matching up to a date */
@@ -1115,19 +1165,19 @@ function openLots(sym,excludeId,uptoDate){
     }}
   return out}
 function toggleLot(id){readF();if(!F.lots)F.lots=[];var ix=F.lots.indexOf(id);if(ix>=0)F.lots.splice(ix,1);else F.lots.push(id);
-  var sym=String(F.symbol).toUpperCase(),ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00")),tot=0;
+  var sym=formSymbol(),ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00")),tot=0;
   for(var i=0;i<F.lots.length;i++){for(var j=0;j<ls.length;j++){if(ls[j].id===F.lots[i]){tot+=ls[j].r;break}}}
   if(F.lots.length>0){F.qty=Math.round(tot*1e6)/1e6;tot=F.qty;var qEl=document.getElementById("f_q");if(qEl)qEl.value=tot}
   updTot()}
 function buildLotsHtml(){
   if(F.action!=="sell"||!F.symbol)return"";
-  var sym=String(F.symbol).toUpperCase();
+  var sym=formSymbol();
   var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00"));
   if(!ls.length)return'<div style="font-size:11px;color:var(--dim);margin-bottom:14px">💡 '+esc(sym)+' 目前沒有可平倉的買入批次</div>';
   if(!F.lots)F.lots=[];
   var avail={};for(var i=0;i<ls.length;i++)avail[ls[i].id]=1;
   var keep=[];for(var i=0;i<F.lots.length;i++){if(avail[F.lots[i]])keep.push(F.lots[i])}F.lots=keep;
-  var tw=F.cur==="TWD",ps=tw?"NT$":"$",mul=tw?1000:1,f=tw?fmTW:fm,un=tw?"張":"股";
+  var tw=F.cur==="TWD",ps=moneySign(F.cur),mul=tw?1000:1,f=tw?fmTW:fm,un=tw?"張":"股";
   var need=+F.qty||0,price=+F.price||0,sellFee=fFee();
   var take={},r=need;
   for(var i=0;i<F.lots.length&&r>0;i++){for(var j=0;j<ls.length;j++){if(ls[j].id===F.lots[i]){var k=Math.min(r,ls[j].r);take[ls[j].id]=k;r-=k;break}}}
@@ -1158,7 +1208,7 @@ function buildLotsHtml(){
 function fmP(n,tw){if(!tw)return fm(n);if(n==null||isNaN(n))return"—";return Number(n).toLocaleString("en-US",{maximumFractionDigits:2})}
 /* Which market a typed symbol belongs to: digits only (2330, 00878) = Taiwan, any letter = US.
    A half-typed number keeps the market already chosen, so typing "2" on 台股 doesn't flip it. */
-function symCur(s,dflt){s=String(s||"");return isTW(s)?"TWD":(/[A-Za-z]/.test(s)?"USD":(dflt||"USD"))}
+function symCur(s,dflt){s=String(s||"");if(isJP(s)||dflt==="JPY")return "JPY";return isTW(s)?"TWD":(/[A-Za-z]/.test(s)?"USD":(dflt||"USD"))}
 
 /* --- trade form: one-tap symbols --------------------------------------------------------
    What is held now (largest first) and -- for a buy -- everything traded before, most recent
@@ -1182,7 +1232,7 @@ function symChipsHtml(){
     if(q&&(s===q||s.indexOf(q)!==0))continue;
     h+='<button class="schip'+(L[i].h?'':' old')+'" onclick="pickSym(\''+s+'\')">'+s+'</button>';n++}
   return n?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'+h+'</div>':""}
-function pickSym(sym){readF();F.symbol=sym;var c=symCur(sym,F.cur);
+function pickSym(sym){readF();F.symbol=sym;var c=symCur(sym,"USD");
   if(c!==F.cur){F.cur=c;if(!S.ed&&!F._frT)F.fr=defFee(c)}
   var r=+F.fr||0;F.fee=(r>0)?(fGross()*r/100):0;
   render()}
@@ -1193,8 +1243,8 @@ function pickSym(sym){readF();F.symbol=sym;var c=symCur(sym,F.cur);
    is still allowed (the record may be incomplete), just flagged. For a buy: what is held. */
 function openQty(sym){var ls=openLots(sym,F.id||null,F.date+" "+(F.tm||"00:00")),t=0,i;for(i=0;i<ls.length;i++)t+=ls[i].r;return Math.round(t*1e6)/1e6}
 function fHintHtml(){
-  var sym=String(F.symbol||"").toUpperCase();if(!sym)return'<div style="height:4px"></div>';
-  var tw=symCur(sym,F.cur)==="TWD",ps=tw?"NT$":"$",un=tw?"張":"股",L="",R="";
+  var sym=formSymbol();if(!sym)return'<div style="height:4px"></div>';
+  var tw=F.cur==="TWD",ps=moneySign(F.cur),un=tw?"張":"股",L="",R="";
   var q=gp(sym);
   if(q){L='現價 '+ps+fmP(q,tw);if(Math.abs((+F.price||0)-q)>1e-9)L+='<button class="flink" onclick="useQuote()">帶入</button>'}
   var have=openQty(sym),need=+F.qty||0;
@@ -1205,8 +1255,8 @@ function fHintHtml(){
   }else if(have>QE)R='已持有 '+H(fmQ(have))+' '+un;
   if(!L&&!R)return'<div style="height:4px"></div>';
   return'<div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.5"><div style="flex:1;min-width:0">'+L+'</div><div style="flex:1;min-width:0">'+R+'</div></div>'}
-function useQuote(){readF();var q=gp(String(F.symbol||"").toUpperCase());if(!q)return;var e=document.getElementById("f_p");if(e)e.value=q;updTot()}
-function useAllQty(){readF();var have=openQty(String(F.symbol||"").toUpperCase());if(!(have>QE))return;var e=document.getElementById("f_q");if(e)e.value=have;updTot()}
+function useQuote(){readF();var q=gp(formSymbol());if(!q)return;var e=document.getElementById("f_p");if(e)e.value=q;updTot()}
+function useAllQty(){readF();var have=openQty(formSymbol());if(!(have>QE))return;var e=document.getElementById("f_q");if(e)e.value=have;updTot()}
 function feeChipsHtml(){var chips="";
   for(var fpi=0;fpi<FEE_PRESETS.length;fpi++){var FP=FEE_PRESETS[fpi];
     if(FP.cur&&FP.cur!==F.cur)continue;
@@ -1219,11 +1269,12 @@ function paintFormExtras(){
   var e=document.getElementById("fChips");if(e)e.innerHTML=symChipsHtml();
   e=document.getElementById("fHint");if(e)e.innerHTML=fHintHtml();
   if(S._fCur!==F.cur)paintCur()}
-function paintCur(){var tw=F.cur==="TWD",ps=tw?"NT$":"$",e;S._fCur=F.cur;
-  e=document.getElementById("fcU");if(e)e.className="tg"+(tw?"":" on");
+function paintCur(){var tw=F.cur==="TWD",ps=moneySign(F.cur),e;S._fCur=F.cur;
+  e=document.getElementById("fcU");if(e)e.className="tg"+(F.cur==="USD"?" on":"");
+  e=document.getElementById("fcJ");if(e)e.className="tg"+(F.cur==="JPY"?" on":"");
   e=document.getElementById("fcT");if(e)e.className="tg"+(tw?" tw":"");
   e=document.getElementById("fSymL");if(e)e.textContent=tw?"股票代號":"代號";
-  e=document.getElementById("f_s");if(e)e.placeholder=tw?"2330":"TSLA";
+  e=document.getElementById("f_s");if(e)e.placeholder=F.cur==="JPY"?"7203":tw?"2330":"TSLA";
   e=document.getElementById("fPL");if(e)e.textContent="每股價格 ("+ps+")";
   e=document.getElementById("fQL");if(e)e.textContent=tw?"張數":"數量";
   e=document.getElementById("fTip");if(e)e.style.display=tw?"":"none";
@@ -1338,7 +1389,7 @@ function tradeResults(){
     if(!tFiltered.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">目前條件找不到交易</div>';
     var tIx={};for(var ti=0;ti<S.tr.length;ti++)tIx[S.tr[ti].id]=ti;
     var sorted=tFiltered.sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?1:-1;return(tIx[b.id]||0)-(tIx[a.id]||0)});
-    for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+    for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=moneySign(t.cur),f=tw?fmTW:fm;
       h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+fmP(tPrice,tw)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(tQty)+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
       h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
       h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
@@ -1439,7 +1490,7 @@ function runGasDiag(){
       if(!d||!d.ok)return{ok:false,m:"GAS 回 ok:false"};
       var slow=parseFloat(sec)>8;
       return{ok:true,slow:slow,m:"GAS "+(d.version||"?")+" · "+sec+" 秒"+(slow?"（很慢，正常 1 秒內）":"")+(d.version&&d.version!==GAS_VER?"（這版 app 需要 "+GAS_VER+"）":"")}},true)})
-    .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us&_t="+Date.now(),45000,function(d,sec){
+    .then(function(){return step("即時報價（經 GAS）",GS+"?action=quotes&syms="+encodeURIComponent(sym)+"&mkt=us"+(night?"&night=1":"")+"&_t="+Date.now(),45000,function(d,sec){
       var q=d&&d.ok&&d.q&&d.q[sym];if(!q)return{ok:false,m:sym+" 沒有拿到報價"+(d&&d.e?"："+d.e:"")};
       var age=q.ts?Math.round(Date.now()/1000-q.ts):null;
       return{ok:true,m:sym+" $"+fm(q.p)+(sessName(q.sess)?" "+sessName(q.sess):"")+(age!=null?" · "+ageLabel(age):"")+" · "+sec+" 秒"}})})
@@ -1568,7 +1619,7 @@ function recoveryPage(){
 }
 
 function gasCode(){
-  return "var SHEET_NAME = 'Data';\nvar GAS_VERSION = 'v12';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'ping') return jsonOut({ok:true, msg:'pong', version:GAS_VERSION});\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  if (action === 'ytd') return getYtd(e.parameter.sym, e.parameter.mkt, e.parameter.year);\n  if (action === 'quotes') return getQuotes(e.parameter.syms, e.parameter.mkt);\n  if (action === 'diag') return getDiag(e.parameter.sym, e.parameter.mkt);\n  if (action === 'probe') return getProbe(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  var lock = LockService.getScriptLock();\n  try { lock.waitLock(25000); } catch (le) { return jsonOut({ok:false, e:'雲端忙碌中，請稍後再試'}); }\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var sh = dataSheet();\n    var R = readColsN(sh), cur = R.s;\n    var curTr = pj(cur[0], []);\n    if (curTr === null) return jsonOut({ok:false, e:'雲端交易資料無法解析，已中止寫入以免覆蓋'});\n    var A = {tr: curTr, pr: pj(cur[1], {}) || {}, hist: pj(cur[2], []) || [], del: pj(cur[3], {}) || {}};\n    var B = {tr: pj(d.trades, []) || [], pr: pj(d.prices, {}) || {}, hist: pj(d.history, []) || [], del: pj(d.del, {}) || {}};\n    var M = mergeCore(A, B);\n    var out = [JSON.stringify(M.tr), JSON.stringify(M.pr), JSON.stringify(M.hist), JSON.stringify(M.del)];\n    /* v12: only columns whose content changed are written, and history only when something other\n       than today's snapshot changed (or today has no row yet) -- about once a day. Rewriting all\n       four columns on every sync is what made the old spreadsheet slow to open. */\n    var skip = {};\n    if (sameHistoryButToday(A.hist, M.hist)) skip[2] = 1;\n    var wrote = writeChanged(sh, out, cur, R.n, skip);\n    return jsonOut({ok:true, merged:true, version:GAS_VERSION, wrote:wrote, n:M.tr.length, trades:out[0], prices:out[1], history:out[2], del:out[3]});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n  finally { lock.releaseLock(); }\n}\n\n/* Storage: column A = trades, B = prices, C = history, D = deletions. Each value is split\n   into 40k-char chunks down the column (a Sheets cell holds at most 50k), every chunk\n   prefixed with ~ so Sheets never reads one as a number, date or formula. The old\n   single-cell layout (A1/B1/C1) reads back unchanged. */\nfunction dataSheet() {\n  var ss = SpreadsheetApp.getActiveSpreadsheet();\n  return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n}\nfunction pj(v, f) {\n  if (v === undefined || v === null || v === '') return f;\n  if (typeof v !== 'string') return v;\n  try { return JSON.parse(v); } catch (x) { return null; }\n}\nfunction readColsN(sh) {\n  var out = ['', '', '', ''], n = [0, 0, 0, 0];\n  if (!sh) return {s: out, n: n};\n  var lr = sh.getLastRow();\n  if (lr < 1) return {s: out, n: n};\n  var v = sh.getRange(1, 1, lr, 4).getValues();\n  for (var c = 0; c < 4; c++) {\n    var acc = '';\n    for (var r = 0; r < v.length; r++) {\n      var x = v[r][c];\n      if (x === '' || x === null) break;\n      x = String(x);\n      if (x.charAt(0) === '~') x = x.substring(1);\n      acc += x;\n      n[c] = r + 1;\n    }\n    out[c] = acc;\n  }\n  return {s: out, n: n};\n}\nfunction readCols(sh) { return readColsN(sh).s; }\n/* Writes only the columns whose text differs from what is stored, each split into 40k-char\n   chunks down its own column (a cell holds at most 50k), every chunk prefixed with ~ so Sheets\n   never reads it as a number, date or formula. Rows a shorter column no longer uses are cleared\n   in that column only. Nothing changed = nothing written. Returns the letters written, e.g. \"AB\". */\nfunction writeChanged(sh, cols, old, oldN, skip) {\n  var CH = 40000, wrote = '', c, i;\n  for (c = 0; c < cols.length; c++) {\n    if (skip[c] || String(cols[c]) === String(old[c])) continue;\n    var str = String(cols[c]), p = [];\n    for (i = 0; i < str.length; i += CH) p.push(['~' + str.substring(i, i + CH)]);\n    if (!p.length) p.push(['~']);\n    sh.getRange(1, c + 1, p.length, 1).setValues(p);\n    if (oldN[c] > p.length) sh.getRange(p.length + 1, c + 1, oldN[c] - p.length, 1).clearContent();\n    wrote += 'ABCD'.charAt(c);\n  }\n  if (wrote) SpreadsheetApp.flush();\n  return wrote;\n}\n/* true when the two histories differ at most in today's entry AND the stored one already has\n   today -- then the history column is left alone until something else in it changes. */\nfunction sameHistoryButToday(stored, merged) {\n  var today = new Date().toISOString().slice(0, 10), a = {}, b = {}, has = false, i, k;\n  for (i = 0; i < stored.length; i++) { var x = stored[i]; if (!x || !x.d) continue; if (x.d === today) has = true; else a[x.d] = JSON.stringify(x); }\n  if (!has) return false;\n  for (i = 0; i < merged.length; i++) { var y = merged[i]; if (y && y.d && y.d !== today) b[y.d] = JSON.stringify(y); }\n  for (k in a) if (a[k] !== b[k]) return false;\n  for (k in b) if (a[k] !== b[k]) return false;\n  return true;\n}\n\nfunction readData() {\n  try {\n    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:true, empty:true, version:GAS_VERSION, trades:'[]', prices:'{}', history:'[]', del:'{}'});\n    var c = readCols(sh);\n    return jsonOut({ok:true, version:GAS_VERSION, trades:c[0] || '[]', prices:c[1] || '{}', history:c[2] || '[]', del:c[3] || '{}'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\n/* YTD baseline = previous year's LAST trading day CLOSE price.\n   v6: removed Stooq (was hanging GAS via UrlFetchApp). Now Yahoo first, TWSE backup.\n   Each branch wrapped in independent try-catch so one slow source can't kill the others. */\nfunction getYtd(sym, mkt, year) {\n  var y = parseInt(year) || (new Date()).getFullYear();\n  var prevY = y - 1;\n  var tried = [];\n\n  // ---------- 1. Yahoo Finance (works for both US and TW with .TW suffix) ----------\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var p1 = Math.floor(Date.UTC(prevY, 11, 20) / 1000);\n    var p2 = Math.floor(Date.UTC(y, 0, 5) / 1000);\n    var yurl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym)\n      + '?period1=' + p1 + '&period2=' + p2 + '&interval=1d';\n    var opts = {\n      muteHttpExceptions: true,\n      headers: {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}\n    };\n    var yresp = UrlFetchApp.fetch(yurl, opts);\n    var ycode = yresp.getResponseCode();\n    if (ycode === 200) {\n      var body = JSON.parse(yresp.getContentText());\n      var result = body && body.chart && body.chart.result && body.chart.result[0];\n      var ts = result && result.timestamp;\n      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];\n      var closes = quote && quote.close;\n      var cutoff = Math.floor(Date.UTC(y, 0, 1) / 1000);\n      var bestPrice = 0, bestTs = 0;\n      if (ts && closes) {\n        for (var i = 0; i < ts.length; i++) {\n          if (ts[i] < cutoff && closes[i] != null && closes[i] > 0) {\n            if (ts[i] > bestTs) { bestTs = ts[i]; bestPrice = closes[i]; }\n          }\n        }\n      }\n      if (bestPrice > 0) {\n        var dateStr = new Date(bestTs * 1000).toISOString().substring(0, 10);\n        return jsonOut({ok:true, price:bestPrice, source:'yahoo', baselineDate:dateStr, ticker:yhSym, tried:tried});\n      }\n      tried.push({src:'yahoo', reason:'no close before Jan 1'});\n    } else {\n      tried.push({src:'yahoo', reason:'http '+ycode});\n    }\n  } catch(err) { tried.push({src:'yahoo', reason:'err: '+err.message}); }\n\n  // ---------- 2. TWSE STOCK_DAY (TW only) ----------\n  if (mkt === 'tw') {\n    try {\n      var turl = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=' + prevY + '1201&stockNo=' + sym;\n      var tresp = UrlFetchApp.fetch(turl, {muteHttpExceptions:true});\n      var tcode = tresp.getResponseCode();\n      if (tcode === 200) {\n        var r = JSON.parse(tresp.getContentText());\n        if (r.stat === 'OK' && r.data && r.data.length) {\n          var lastRow = r.data[r.data.length - 1];\n          var closeP = parseFloat(String(lastRow[6]).replace(/,/g,''));\n          if (closeP > 0) return jsonOut({ok:true, price:closeP, source:'twse', baselineDate:String(lastRow[0]), ticker:sym, tried:tried});\n        }\n        tried.push({src:'twse', reason:'no data: '+(r.stat||'unknown')});\n      } else {\n        tried.push({src:'twse', reason:'http '+tcode});\n      }\n    } catch(err) { tried.push({src:'twse', reason:'err: '+err.message}); }\n  }\n\n  return jsonOut({ok:false, price:0, tried:tried});\n}\n\n/* Batch live quotes incl. pre-market / post-market, via Yahoo chart API.\n   fetchAll() runs every symbol in parallel so one client request covers the whole portfolio. */\nfunction getQuotes(syms, mkt) {\n  try {\n    var list = String(syms || '').split(',');\n    var reqs = [], names = [];\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    for (var i = 0; i < list.length; i++) {\n      var s = String(list[i]).replace(/\\s/g, '');\n      if (!s) continue;\n      var yhSym = (mkt === 'tw' && s.indexOf('.') < 0) ? (s + '.TW') : s;\n      reqs.push({\n        url: 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d',\n        muteHttpExceptions: true,\n        headers: {'User-Agent': ua}\n      });\n      names.push(s);\n    }\n    if (!reqs.length) return jsonOut({ok:true, q:{}});\n    var resps = UrlFetchApp.fetchAll(reqs);\n    var out = {};\n    for (var j = 0; j < resps.length; j++) {\n      try {\n        if (resps[j].getResponseCode() !== 200) continue;\n        var parsed = parseChart(resps[j].getContentText());\n        if (parsed) out[names[j]] = parsed;\n      } catch (e2) {}\n    }\n    return jsonOut({ok:true, q:out});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\nfunction parseChart(txt) {\n  var body = JSON.parse(txt);\n  var r = body && body.chart && body.chart.result && body.chart.result[0];\n  if (!r) return null;\n  var meta = r.meta || {};\n  var ts = r.timestamp || [];\n  var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n  var closes = (q && q.close) || [];\n  var last = 0, lastTs = 0;\n  for (var i = closes.length - 1; i >= 0; i--) {\n    if (closes[i] != null && closes[i] > 0) { last = closes[i]; lastTs = ts[i] || 0; break; }\n  }\n  var reg = meta.regularMarketPrice || 0;\n  var regTs = meta.regularMarketTime || 0;\n  var prev = meta.chartPreviousClose || meta.previousClose || 0;\n  var sess = 'closed';\n  var cp = meta.currentTradingPeriod || {};\n  var nowS = Math.floor(new Date().getTime() / 1000);\n  if (cp.pre && nowS >= cp.pre.start && nowS < cp.pre.end) sess = 'pre';\n  else if (cp.regular && nowS >= cp.regular.start && nowS < cp.regular.end) sess = 'regular';\n  else if (cp.post && nowS >= cp.post.start && nowS < cp.post.end) sess = 'post';\n  else if (cp.pre && cp.post) {\n    /* Outside pre/regular/post = the 8pm-4am ET overnight window (Blue Ocean ATS).\n       Only call it live if the newest bar is genuinely recent; otherwise it is just\n       a stale post-market close and we must not pretend it is an overnight quote. */\n    sess = (lastTs > 0 && (nowS - lastTs) < 1800) ? 'overnight' : 'closed';\n  }\n\n  /* v7 FRESHNESS FIX -- this was the bug that made the app show 15-minute-old prices\n     while the header claimed the data was live. Yahoo's 1-minute bar array lags\n     meta.regularMarketPrice, routinely by 10-15 minutes, and the old code always read\n     the last bar. meta is the freshest field in the payload, so prefer it whenever its\n     timestamp is at least as new as the newest bar. Never do this in pre/post/overnight:\n     there meta.regularMarketPrice is the STALE regular close while the bars carry the\n     live extended-hours print, so overriding would make things worse, not better. */\n  var src = 'bar';\n  if (sess === 'regular' && reg > 0 && regTs >= lastTs) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) return null;\n  return {p:last, rp:reg, prev:prev, sess:sess, ts:lastTs, src:src, age:(nowS - lastTs)};\n}\n\n/* Diagnostic: shows exactly what Yahoo returns for one symbol, with the newest bars\n   labelled in both US Eastern and Taipei time. Use it to confirm whether overnight\n   (Blue Ocean) bars are present: ?action=diag&sym=TSLA */\nfunction getDiag(sym, mkt) {\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d';\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': ua}});\n    var code = resp.getResponseCode();\n    if (code !== 200) return jsonOut({ok:false, http:code});\n    var txt = resp.getContentText();\n    var body = JSON.parse(txt);\n    var r = body && body.chart && body.chart.result && body.chart.result[0];\n    if (!r) return jsonOut({ok:false, e:'no result'});\n    var meta = r.meta || {}, ts = r.timestamp || [];\n    var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n    var closes = (q && q.close) || [];\n    var tail = [];\n    for (var i = closes.length - 1; i >= 0 && tail.length < 10; i--) {\n      if (closes[i] == null) continue;\n      var d = new Date(ts[i] * 1000);\n      tail.push({\n        et: Utilities.formatDate(d, 'America/New_York', 'MM-dd HH:mm'),\n        tw: Utilities.formatDate(d, 'Asia/Taipei', 'MM-dd HH:mm'),\n        p: closes[i]\n      });\n    }\n    var cp = meta.currentTradingPeriod || {};\n    function per(x) {\n      if (!x) return '-';\n      return Utilities.formatDate(new Date(x.start*1000), 'Asia/Taipei', 'MM-dd HH:mm')\n        + ' ~ ' + Utilities.formatDate(new Date(x.end*1000), 'Asia/Taipei', 'MM-dd HH:mm') + ' (TW)';\n    }\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: yhSym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      regularMarketPrice: meta.regularMarketPrice,\n      chartPreviousClose: meta.chartPreviousClose,\n      periods: {pre: per(cp.pre), regular: per(cp.regular), post: per(cp.post)},\n      totalBars: closes.length,\n      newestBars: tail,\n      parsed: parseChart(txt)\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\n/* --- Yahoo v7 quote probe ---\n   The chart endpoint carries no Blue Ocean overnight bars, but yahoo.com itself shows an\n   Overnight price, so the data may sit on the quote endpoint instead. That endpoint needs\n   a cookie + crumb. This probe fetches it and dumps the field names so we can see whether an\n   overnight field actually exists, before wiring anything into the live price path.\n   Usage: ?action=probe&sym=TSLA */\nvar YH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n\nfunction yahooAuth() {\n  var cache = CacheService.getScriptCache();\n  var cr = cache.get('yh_crumb'), ck = cache.get('yh_cookie');\n  if (cr && ck) return {crumb: cr, cookie: ck};\n  var r1 = UrlFetchApp.fetch('https://fc.yahoo.com', {muteHttpExceptions:true, followRedirects:false, headers:{'User-Agent': YH_UA}});\n  var h = r1.getAllHeaders();\n  var sc = h['Set-Cookie'] || h['set-cookie'];\n  if (!sc) return null;\n  if (Array.isArray(sc)) sc = sc[0];\n  var cookie = String(sc).split(';')[0];\n  var r2 = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': cookie}});\n  var crumb = r2.getContentText().replace(/\\s/g, '');\n  if (!crumb || crumb.length > 40) return null;\n  cache.put('yh_crumb', crumb, 3600);\n  cache.put('yh_cookie', cookie, 3600);\n  return {crumb: crumb, cookie: cookie};\n}\n\nfunction getProbe(sym) {\n  try {\n    sym = sym || 'TSLA';\n    var a = yahooAuth();\n    if (!a) return jsonOut({ok:false, step:'auth', e:'could not obtain cookie/crumb'});\n    var url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + encodeURIComponent(sym) + '&crumb=' + encodeURIComponent(a.crumb);\n    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': a.cookie}});\n    var code = r.getResponseCode();\n    var txt = r.getContentText();\n    if (code !== 200) return jsonOut({ok:false, step:'quote', http:code, body:txt.substring(0, 400)});\n    var body = JSON.parse(txt);\n    var q = body && body.quoteResponse && body.quoteResponse.result && body.quoteResponse.result[0];\n    if (!q) return jsonOut({ok:false, step:'parse', body:txt.substring(0, 400)});\n    var keys = [], matched = {};\n    for (var k in q) {\n      keys.push(k);\n      if (/night|pre|post|extend/i.test(k)) matched[k] = q[k];\n    }\n    keys.sort();\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: sym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      marketState: q.marketState,\n      regularMarketPrice: q.regularMarketPrice,\n      regularMarketPreviousClose: q.regularMarketPreviousClose,\n      sessionFields: matched,\n      allKeys: keys\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n"+"\n"+mergeCore.toString()+"\n";
+  return "var SHEET_NAME = 'Data';\nvar GAS_VERSION = 'v13';\n\nfunction doGet(e) {\n  var action = (e.parameter.action || '').toString();\n  if (action === 'ping') return jsonOut({ok:true, msg:'pong', version:GAS_VERSION});\n  if (action === 'read') return readData();\n  if (action === 'twprice') return getTWPrice(e.parameter.sym);\n  if (action === 'ytd') return getYtd(e.parameter.sym, e.parameter.mkt, e.parameter.year);\n  if (action === 'quotes') return getQuotes(e.parameter.syms, e.parameter.mkt, e.parameter.night === '1');\n  if (action === 'diag') return getDiag(e.parameter.sym, e.parameter.mkt);\n  if (action === 'probe') return getProbe(e.parameter.sym);\n  return jsonOut({ok:false});\n}\n\nfunction doPost(e) {\n  var lock = LockService.getScriptLock();\n  try { lock.waitLock(25000); } catch (le) { return jsonOut({ok:false, e:'雲端忙碌中，請稍後再試'}); }\n  try {\n    var d = JSON.parse(e.postData.contents);\n    var sh = dataSheet();\n    var R = readColsN(sh), cur = R.s;\n    var curTr = pj(cur[0], []);\n    if (curTr === null) return jsonOut({ok:false, e:'雲端交易資料無法解析，已中止寫入以免覆蓋'});\n    var A = {tr: curTr, pr: pj(cur[1], {}) || {}, hist: pj(cur[2], []) || [], del: pj(cur[3], {}) || {}};\n    var B = {tr: pj(d.trades, []) || [], pr: pj(d.prices, {}) || {}, hist: pj(d.history, []) || [], del: pj(d.del, {}) || {}};\n    var M = mergeCore(A, B);\n    var out = [JSON.stringify(M.tr), JSON.stringify(M.pr), JSON.stringify(M.hist), JSON.stringify(M.del)];\n    /* v12: only columns whose content changed are written, and history only when something other\n       than today's snapshot changed (or today has no row yet) -- about once a day. Rewriting all\n       four columns on every sync is what made the old spreadsheet slow to open. */\n    var skip = {};\n    if (sameHistoryButToday(A.hist, M.hist)) skip[2] = 1;\n    var wrote = writeChanged(sh, out, cur, R.n, skip);\n    return jsonOut({ok:true, merged:true, version:GAS_VERSION, wrote:wrote, n:M.tr.length, trades:out[0], prices:out[1], history:out[2], del:out[3]});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n  finally { lock.releaseLock(); }\n}\n\n/* Storage: column A = trades, B = prices, C = history, D = deletions. Each value is split\n   into 40k-char chunks down the column (a Sheets cell holds at most 50k), every chunk\n   prefixed with ~ so Sheets never reads one as a number, date or formula. The old\n   single-cell layout (A1/B1/C1) reads back unchanged. */\nfunction dataSheet() {\n  var ss = SpreadsheetApp.getActiveSpreadsheet();\n  return ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);\n}\nfunction pj(v, f) {\n  if (v === undefined || v === null || v === '') return f;\n  if (typeof v !== 'string') return v;\n  try { return JSON.parse(v); } catch (x) { return null; }\n}\nfunction readColsN(sh) {\n  var out = ['', '', '', ''], n = [0, 0, 0, 0];\n  if (!sh) return {s: out, n: n};\n  var lr = sh.getLastRow();\n  if (lr < 1) return {s: out, n: n};\n  var v = sh.getRange(1, 1, lr, 4).getValues();\n  for (var c = 0; c < 4; c++) {\n    var acc = '';\n    for (var r = 0; r < v.length; r++) {\n      var x = v[r][c];\n      if (x === '' || x === null) break;\n      x = String(x);\n      if (x.charAt(0) === '~') x = x.substring(1);\n      acc += x;\n      n[c] = r + 1;\n    }\n    out[c] = acc;\n  }\n  return {s: out, n: n};\n}\nfunction readCols(sh) { return readColsN(sh).s; }\n/* Writes only the columns whose text differs from what is stored, each split into 40k-char\n   chunks down its own column (a cell holds at most 50k), every chunk prefixed with ~ so Sheets\n   never reads it as a number, date or formula. Rows a shorter column no longer uses are cleared\n   in that column only. Nothing changed = nothing written. Returns the letters written, e.g. \"AB\". */\nfunction writeChanged(sh, cols, old, oldN, skip) {\n  var CH = 40000, wrote = '', c, i;\n  for (c = 0; c < cols.length; c++) {\n    if (skip[c] || String(cols[c]) === String(old[c])) continue;\n    var str = String(cols[c]), p = [];\n    for (i = 0; i < str.length; i += CH) p.push(['~' + str.substring(i, i + CH)]);\n    if (!p.length) p.push(['~']);\n    sh.getRange(1, c + 1, p.length, 1).setValues(p);\n    if (oldN[c] > p.length) sh.getRange(p.length + 1, c + 1, oldN[c] - p.length, 1).clearContent();\n    wrote += 'ABCD'.charAt(c);\n  }\n  if (wrote) SpreadsheetApp.flush();\n  return wrote;\n}\n/* true when the two histories differ at most in today's entry AND the stored one already has\n   today -- then the history column is left alone until something else in it changes. */\nfunction sameHistoryButToday(stored, merged) {\n  var today = new Date().toISOString().slice(0, 10), a = {}, b = {}, has = false, i, k;\n  for (i = 0; i < stored.length; i++) { var x = stored[i]; if (!x || !x.d) continue; if (x.d === today) has = true; else a[x.d] = JSON.stringify(x); }\n  if (!has) return false;\n  for (i = 0; i < merged.length; i++) { var y = merged[i]; if (y && y.d && y.d !== today) b[y.d] = JSON.stringify(y); }\n  for (k in a) if (a[k] !== b[k]) return false;\n  for (k in b) if (a[k] !== b[k]) return false;\n  return true;\n}\n\nfunction readData() {\n  try {\n    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);\n    if (!sh) return jsonOut({ok:true, empty:true, version:GAS_VERSION, trades:'[]', prices:'{}', history:'[]', del:'{}'});\n    var c = readCols(sh);\n    return jsonOut({ok:true, version:GAS_VERSION, trades:c[0] || '[]', prices:c[1] || '{}', history:c[2] || '[]', del:c[3] || '{}'});\n  } catch(err) { return jsonOut({ok:false,e:err.message}); }\n}\n\nfunction getTWPrice(sym) {\n  try {\n    var url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_' + sym + '.tw';\n    var r = JSON.parse(UrlFetchApp.fetch(url).getContentText());\n    var d = r.msgArray && r.msgArray[0];\n    var p = d ? parseFloat(d.z) || parseFloat(d.y) : 0;\n    var y = d ? parseFloat(d.y) : 0;\n    return jsonOut({ok:true,price:p,yesterday:y});\n  } catch(err) { return jsonOut({ok:false,price:0}); }\n}\n\n/* YTD baseline = previous year's LAST trading day CLOSE price.\n   v6: removed Stooq (was hanging GAS via UrlFetchApp). Now Yahoo first, TWSE backup.\n   Each branch wrapped in independent try-catch so one slow source can't kill the others. */\nfunction getYtd(sym, mkt, year) {\n  var y = parseInt(year) || (new Date()).getFullYear();\n  var prevY = y - 1;\n  var tried = [];\n\n  // ---------- 1. Yahoo Finance (works for both US and TW with .TW suffix) ----------\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var p1 = Math.floor(Date.UTC(prevY, 11, 20) / 1000);\n    var p2 = Math.floor(Date.UTC(y, 0, 5) / 1000);\n    var yurl = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym)\n      + '?period1=' + p1 + '&period2=' + p2 + '&interval=1d';\n    var opts = {\n      muteHttpExceptions: true,\n      headers: {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}\n    };\n    var yresp = UrlFetchApp.fetch(yurl, opts);\n    var ycode = yresp.getResponseCode();\n    if (ycode === 200) {\n      var body = JSON.parse(yresp.getContentText());\n      var result = body && body.chart && body.chart.result && body.chart.result[0];\n      var ts = result && result.timestamp;\n      var quote = result && result.indicators && result.indicators.quote && result.indicators.quote[0];\n      var closes = quote && quote.close;\n      var cutoff = Math.floor(Date.UTC(y, 0, 1) / 1000);\n      var bestPrice = 0, bestTs = 0;\n      if (ts && closes) {\n        for (var i = 0; i < ts.length; i++) {\n          if (ts[i] < cutoff && closes[i] != null && closes[i] > 0) {\n            if (ts[i] > bestTs) { bestTs = ts[i]; bestPrice = closes[i]; }\n          }\n        }\n      }\n      if (bestPrice > 0) {\n        var dateStr = new Date(bestTs * 1000).toISOString().substring(0, 10);\n        return jsonOut({ok:true, price:bestPrice, source:'yahoo', baselineDate:dateStr, ticker:yhSym, tried:tried});\n      }\n      tried.push({src:'yahoo', reason:'no close before Jan 1'});\n    } else {\n      tried.push({src:'yahoo', reason:'http '+ycode});\n    }\n  } catch(err) { tried.push({src:'yahoo', reason:'err: '+err.message}); }\n\n  // ---------- 2. TWSE STOCK_DAY (TW only) ----------\n  if (mkt === 'tw') {\n    try {\n      var turl = 'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=' + prevY + '1201&stockNo=' + sym;\n      var tresp = UrlFetchApp.fetch(turl, {muteHttpExceptions:true});\n      var tcode = tresp.getResponseCode();\n      if (tcode === 200) {\n        var r = JSON.parse(tresp.getContentText());\n        if (r.stat === 'OK' && r.data && r.data.length) {\n          var lastRow = r.data[r.data.length - 1];\n          var closeP = parseFloat(String(lastRow[6]).replace(/,/g,''));\n          if (closeP > 0) return jsonOut({ok:true, price:closeP, source:'twse', baselineDate:String(lastRow[0]), ticker:sym, tried:tried});\n        }\n        tried.push({src:'twse', reason:'no data: '+(r.stat||'unknown')});\n      } else {\n        tried.push({src:'twse', reason:'http '+tcode});\n      }\n    } catch(err) { tried.push({src:'twse', reason:'err: '+err.message}); }\n  }\n\n  return jsonOut({ok:false, price:0, tried:tried});\n}\n\n/* Batch live quotes incl. pre-market / post-market, via Yahoo chart API.\n   fetchAll() runs every symbol in parallel so one client request covers the whole portfolio. */\nfunction getQuotes(syms, mkt, night) {\n  try {\n    var list = String(syms || '').split(',');\n    var reqs = [], names = [];\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    for (var i = 0; i < list.length; i++) {\n      var s = String(list[i]).replace(/\\s/g, '');\n      if (!s) continue;\n      var yhSym = (mkt === 'tw' && s.indexOf('.') < 0) ? (s + '.TW') : s;\n      reqs.push({\n        url: 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d',\n        muteHttpExceptions: true,\n        headers: {'User-Agent': ua}\n      });\n      names.push(s);\n    }\n    if (!reqs.length) return jsonOut({ok:true, q:{}});\n    var resps = UrlFetchApp.fetchAll(reqs);\n    var out = {};\n    for (var j = 0; j < resps.length; j++) {\n      try {\n        if (resps[j].getResponseCode() !== 200) continue;\n        var parsed = parseChart(resps[j].getContentText());\n        if (parsed) out[names[j]] = parsed;\n      } catch (e2) {}\n    }\n    if (night) addNightPrices(names, out);\n    return jsonOut({ok:true, q:out});\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\n/* Only the explicitly timestamped overnight trade is eligible. A missing\n   overnight field leaves the chart result intact. Credentials here are Yahoo's\n   anonymous visitor session, shared with the existing Yahoo diagnostic. */\nfunction addNightPrices(names, out) {\n  var now = new Date(), time = Utilities.formatDate(now, 'America/New_York', 'HH:mm:ss').split(':');\n  var hours = +time[0], seconds = hours * 3600 + (+time[1]) * 60 + (+time[2]);\n  var weekday = +Utilities.formatDate(now, 'America/New_York', 'u');\n  if (!(hours >= 20 && (weekday === 7 || weekday <= 4)) && !(hours < 4 && weekday <= 5)) return;\n  var start = Math.floor(now.getTime() / 1000) - (seconds + 4 * 3600) % 86400;\n  var eligible = names.filter(function(s){return /^[A-Z][A-Z0-9.-]*$/.test(s);});\n  if (!eligible.length) return;\n  try {\n    var auth = yahooAuth();\n    if (!auth) return;\n    for (var i = 0; i < eligible.length; i += 75) {\n      var group = eligible.slice(i, i + 75);\n      var url = 'https://query1.finance.yahoo.com/v7/finance/quote?overnightPrice=true&symbols='\n        + encodeURIComponent(group.join(',')) + '&crumb=' + encodeURIComponent(auth.crumb);\n      var response = UrlFetchApp.fetch(url, {muteHttpExceptions:true,headers:{'User-Agent':YH_UA,'Cookie':auth.cookie}});\n      if (response.getResponseCode() === 401 || response.getResponseCode() === 403) {\n        CacheService.getScriptCache().removeAll(['yh_crumb','yh_cookie']);\n        return;\n      }\n      if (response.getResponseCode() !== 200) continue;\n      var data = JSON.parse(response.getContentText()).quoteResponse;\n      (data && data.result || []).forEach(function(q) {\n        var price = +q.overnightMarketPrice, ts = +q.overnightMarketTime, now = Date.now();\n        if (group.indexOf(q.symbol) < 0 || !(price > 0 && isFinite(price) && ts > 0) ||\n            ts < start || ts * 1000 > now) return;\n        var old = out[q.symbol];\n        if (old && old.ts > ts) return;\n        out[q.symbol] = {p:price,ts:ts,sess:'overnight',src:'y-night',\n          prev:q.regularMarketPrice || null,rp:q.regularMarketPrice || null,delay:+q.exchangeDataDelayedBy || 0};\n      });\n    }\n  } catch (err) { /* Fall back to chart quotes if the optional feed is unavailable. */ }\n}\n\nfunction parseChart(txt) {\n  var body = JSON.parse(txt);\n  var r = body && body.chart && body.chart.result && body.chart.result[0];\n  if (!r) return null;\n  var meta = r.meta || {};\n  var ts = r.timestamp || [];\n  var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n  var closes = (q && q.close) || [];\n  var last = 0, lastTs = 0;\n  for (var i = closes.length - 1; i >= 0; i--) {\n    if (closes[i] != null && closes[i] > 0) { last = closes[i]; lastTs = ts[i] || 0; break; }\n  }\n  var reg = meta.regularMarketPrice || 0;\n  var regTs = meta.regularMarketTime || 0;\n  var prev = meta.chartPreviousClose || meta.previousClose || 0;\n  var sess = 'closed';\n  var cp = meta.currentTradingPeriod || {};\n  var nowS = Math.floor(new Date().getTime() / 1000);\n  if (cp.pre && nowS >= cp.pre.start && nowS < cp.pre.end) sess = 'pre';\n  else if (cp.regular && nowS >= cp.regular.start && nowS < cp.regular.end) sess = 'regular';\n  else if (cp.post && nowS >= cp.post.start && nowS < cp.post.end) sess = 'post';\n  else if (cp.pre && cp.post) {\n    /* Outside pre/regular/post = the 8pm-4am ET overnight window (Blue Ocean ATS).\n       Only call it live if the newest bar is genuinely recent; otherwise it is just\n       a stale post-market close and we must not pretend it is an overnight quote. */\n    sess = 'closed';\n  }\n\n  /* v7 FRESHNESS FIX -- this was the bug that made the app show 15-minute-old prices\n     while the header claimed the data was live. Yahoo's 1-minute bar array lags\n     meta.regularMarketPrice, routinely by 10-15 minutes, and the old code always read\n     the last bar. meta is the freshest field in the payload, so prefer it whenever its\n     timestamp is at least as new as the newest bar. Never do this in pre/post/overnight:\n     there meta.regularMarketPrice is the STALE regular close while the bars carry the\n     live extended-hours print, so overriding would make things worse, not better. */\n  var src = 'bar';\n  if (sess === 'regular' && reg > 0 && regTs >= lastTs) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) { last = reg; lastTs = regTs; src = 'meta'; }\n  if (!last) return null;\n  return {p:last, rp:reg, prev:prev, sess:sess, ts:lastTs, src:src, age:(nowS - lastTs)};\n}\n\n/* Diagnostic: shows exactly what Yahoo returns for one symbol, with the newest bars\n   labelled in both US Eastern and Taipei time. Use it to confirm whether overnight\n   (Blue Ocean) bars are present: ?action=diag&sym=TSLA */\nfunction getDiag(sym, mkt) {\n  try {\n    var yhSym = (mkt === 'tw' && sym.indexOf('.') < 0) ? (sym + '.TW') : sym;\n    var url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yhSym) + '?includePrePost=true&interval=1m&range=1d';\n    var ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n    var resp = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': ua}});\n    var code = resp.getResponseCode();\n    if (code !== 200) return jsonOut({ok:false, http:code});\n    var txt = resp.getContentText();\n    var body = JSON.parse(txt);\n    var r = body && body.chart && body.chart.result && body.chart.result[0];\n    if (!r) return jsonOut({ok:false, e:'no result'});\n    var meta = r.meta || {}, ts = r.timestamp || [];\n    var q = r.indicators && r.indicators.quote && r.indicators.quote[0];\n    var closes = (q && q.close) || [];\n    var tail = [];\n    for (var i = closes.length - 1; i >= 0 && tail.length < 10; i--) {\n      if (closes[i] == null) continue;\n      var d = new Date(ts[i] * 1000);\n      tail.push({\n        et: Utilities.formatDate(d, 'America/New_York', 'MM-dd HH:mm'),\n        tw: Utilities.formatDate(d, 'Asia/Taipei', 'MM-dd HH:mm'),\n        p: closes[i]\n      });\n    }\n    var cp = meta.currentTradingPeriod || {};\n    function per(x) {\n      if (!x) return '-';\n      return Utilities.formatDate(new Date(x.start*1000), 'Asia/Taipei', 'MM-dd HH:mm')\n        + ' ~ ' + Utilities.formatDate(new Date(x.end*1000), 'Asia/Taipei', 'MM-dd HH:mm') + ' (TW)';\n    }\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: yhSym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      regularMarketPrice: meta.regularMarketPrice,\n      chartPreviousClose: meta.chartPreviousClose,\n      periods: {pre: per(cp.pre), regular: per(cp.regular), post: per(cp.post)},\n      totalBars: closes.length,\n      newestBars: tail,\n      parsed: parseChart(txt)\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\n/* --- Yahoo v7 quote probe ---\n   The chart endpoint carries no Blue Ocean overnight bars, but yahoo.com itself shows an\n   Overnight price, so the data may sit on the quote endpoint instead. That endpoint needs\n   a cookie + crumb. This probe fetches it and dumps the field names so we can see whether an\n   overnight field actually exists, before wiring anything into the live price path.\n   Usage: ?action=probe&sym=TSLA */\nvar YH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';\n\nfunction yahooAuth() {\n  var cache = CacheService.getScriptCache();\n  var cr = cache.get('yh_crumb'), ck = cache.get('yh_cookie');\n  if (cr && ck) return {crumb: cr, cookie: ck};\n  var r1 = UrlFetchApp.fetch('https://fc.yahoo.com', {muteHttpExceptions:true, followRedirects:false, headers:{'User-Agent': YH_UA}});\n  var h = r1.getAllHeaders();\n  var sc = h['Set-Cookie'] || h['set-cookie'];\n  if (!sc) return null;\n  if (Array.isArray(sc)) sc = sc[0];\n  var cookie = String(sc).split(';')[0];\n  var r2 = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': cookie}});\n  if (r2.getResponseCode() !== 200) return null;\n  var crumb = r2.getContentText().replace(/\\s/g, '');\n  if (!crumb || crumb.length > 40) return null;\n  cache.put('yh_crumb', crumb, 3600);\n  cache.put('yh_cookie', cookie, 3600);\n  return {crumb: crumb, cookie: cookie};\n}\n\nfunction getProbe(sym) {\n  try {\n    sym = sym || 'TSLA';\n    var a = yahooAuth();\n    if (!a) return jsonOut({ok:false, step:'auth', e:'could not obtain cookie/crumb'});\n    var url = 'https://query1.finance.yahoo.com/v7/finance/quote?overnightPrice=true&symbols=' + encodeURIComponent(sym) + '&crumb=' + encodeURIComponent(a.crumb);\n    var r = UrlFetchApp.fetch(url, {muteHttpExceptions:true, headers:{'User-Agent': YH_UA, 'Cookie': a.cookie}});\n    var code = r.getResponseCode();\n    var txt = r.getContentText();\n    if (code !== 200) return jsonOut({ok:false, step:'quote', http:code, body:txt.substring(0, 400)});\n    var body = JSON.parse(txt);\n    var q = body && body.quoteResponse && body.quoteResponse.result && body.quoteResponse.result[0];\n    if (!q) return jsonOut({ok:false, step:'parse', body:txt.substring(0, 400)});\n    var keys = [], matched = {};\n    for (var k in q) {\n      keys.push(k);\n      if (/night|pre|post|extend/i.test(k)) matched[k] = q[k];\n    }\n    keys.sort();\n    var now = new Date();\n    return jsonOut({\n      ok: true,\n      symbol: sym,\n      nowTW: Utilities.formatDate(now, 'Asia/Taipei', 'MM-dd HH:mm'),\n      nowET: Utilities.formatDate(now, 'America/New_York', 'MM-dd HH:mm'),\n      marketState: q.marketState,\n      regularMarketPrice: q.regularMarketPrice,\n      regularMarketPreviousClose: q.regularMarketPreviousClose,\n      sessionFields: matched,\n      allKeys: keys\n    });\n  } catch(err) { return jsonOut({ok:false, e:err.message}); }\n}\n\nfunction jsonOut(obj) {\n  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);\n}\n"+"\n"+mergeCore.toString()+"\n";
 }
 function copyGAS(){var code=gasCode();if(navigator.clipboard){navigator.clipboard.writeText(code).then(function(){toast("已複製程式碼 ✓")}).catch(function(){fallbackCopy(code)})}else fallbackCopy(code)}
 function fallbackCopy(t){var a=document.createElement("textarea");a.value=t;a.style.position="absolute";a.style.left="-9999px";document.body.appendChild(a);a.select();try{document.execCommand("copy");toast("已複製程式碼 ✓")}catch(e){toast("複製失敗，請手動選取")}document.body.removeChild(a)}
@@ -1764,7 +1815,13 @@ function computeTodayBreakdown(pf){
     var pd=S.pr[s],p=gp(s),pcv=pd&&pd.pc?pd.pc:null,mul=Y.cur==="TWD"?1000:1;
     if(Y.open&&(!p||!pcv)){rows.push({s:s,raw:null,disp:null,pct:null,cur:Y.cur});continue}
     if(!Y.open&&(!pcv||!pd.at||Date.now()-pd.at>36*3600000))continue;
-    var ref=(pd&&pd.qt)?pd.qt*1000:Date.now(),B=(Y.cur==="TWD"||isTW(s))?twCloseBefore(ref):etCloseBefore(ref);
+    var ref=(pd&&pd.qt)?pd.qt*1000:Date.now(),B;
+    if(Y.cur==="JPY")B=jpCloseBefore(ref);
+    else if(Y.cur==="TWD")B=twCloseBefore(ref);
+    else{
+      var evening=pd&&pd.src==="y-night"&&new Date(ref+etOffset(ref)*3600000).getUTCHours()>=20;
+      B=etCloseBefore(ref+(evening?86400000:0));
+    }
     var raw=0,bs=0,any=false;
     if(Y.open){for(j=0;j<Y.lots.length;j++){var L=Y.lots[j];if(!(L.r>QE))continue;var b0=(L.ts>B)?L.op:pcv;raw+=(p-b0)*L.r*mul;bs+=b0*L.r*mul;any=true}}
     for(j=0;j<Y.sells.length;j++){var c2=Y.sells[j];if(!(c2.ts>B))continue;
@@ -1790,22 +1847,20 @@ function render(passive){try{
   if(S.v==="det"&&S.det){
     var pos=null;for(var i=0;i<pf.op.length;i++){if(pf.op[i].s===S.det){pos=pf.op[i];break}}
     if(!pos){S.v="home";S.det=null;render();return}
-    var p=gp(S.det),tw=pos.cur==="TWD",ps=tw?"NT$":"$";
+    var p=gp(S.det),tw=pos.cur==="TWD",ps=moneySign(pos.cur);
     var avgPS=tw?pos.avg/1000:pos.avg,mV=p?p*pos.q*(tw?1000:1):null,u=p?(p*(tw?1000:1)-pos.avg)*pos.q:null,rt=p?((p*(tw?1000:1)-pos.avg)/pos.avg)*100:null,pc=u!=null?(u>=0?"var(--up)":"var(--down)"):"var(--muted)";
     var rP=0;for(var i=0;i<pf.cl.length;i++){if(pf.cl[i].s===S.det)rP+=pf.cl[i].pnl}
     var st=S.tr.filter(function(t){return t.symbol===S.det}).sort(trCmp);
     var pAt=S.pr[S.det]?S.pr[S.det].at:null,f=tw?fmTW:fm,un=tw?"張":"股",tColor=tickerColor(S.det);
     h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="set({v:\'home\',det:null})">‹</button><div class="brand"><span class="brand-name">'+S.det+'</span></div><button class="hib" onclick="toggleHide()">'+(S.hide?"👁":"🙈")+'</button></div><div class="scr"><div class="cnt">';
     h+='<div style="text-align:center;padding:14px 0 22px"><div style="width:64px;height:64px;border-radius:50%;background:'+tColor+'22;color:'+tColor+';display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;margin:0 auto 14px">'+S.det.charAt(0)+'</div><div style="font-size:28px;font-weight:700;letter-spacing:-0.5px">'+S.det+'</div>';
+    if(pos.cur==="JPY")h+='<div style="font-size:12px;color:var(--muted)">日本東京市場 · 日圓／股</div>';
     if(tw)h+='<div style="font-size:10px;color:var(--amber);margin-top:4px;font-weight:600;letter-spacing:0.5px">🇹🇼 台股 · 1張=1000股</div>';
     h+='<div style="font-size:26px;color:#fff;margin-top:14px;font-weight:700;letter-spacing:-0.4px">'+H(mV!=null?ps+f(mV):"尚未設定報價")+'</div>';
     if(rt!=null)h+='<div style="display:inline-block;margin-top:8px;padding:5px 14px;border-radius:10px;background:'+(rt>=0?"var(--up-soft2)":"var(--down-soft2)")+';font-size:13px;font-weight:700;color:'+pc+'">'+H((rt>=0?"▴ +":"▾ ")+fm(rt)+"%")+'</div>';
     h+='</div>';
     h+='<div style="display:flex;gap:10px;margin-bottom:10px"><button class="bp" style="padding:12px" onclick="quickTrade(\''+S.det+'\',\'buy\')">＋ 買入</button><button class="bp" style="padding:12px;background:var(--down);color:#fff" onclick="quickTrade(\''+S.det+'\',\'sell\')">－ 賣出</button></div>';
     h+='<div class="card" style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;letter-spacing:0.5px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" inputmode="decimal" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 18px" onclick="savePr()">更新</button></div></div>';
-    if(!tw&&pos.tp!=="crypto"&&/^[A-Z][A-Z0-9.\-]*$/.test(S.det)){
-      h+='<a class="bs" style="display:block;text-align:center;text-decoration:none;margin-bottom:10px" target="_blank" rel="noopener noreferrer" href="https://www.tradingview.com/chart/?symbol='+encodeURIComponent("BOATS:"+S.det)+'">查看 TradingView 夜盤 ↗</a>';
-    }
     var prData=S.pr[S.det],pcv=prData&&prData.pc?prData.pc:null;
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     var dayChg=p&&pcv?(p-pcv):null,dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null,dcCol=dayChg!=null?(dayChg>=0?"var(--up)":"var(--down)"):"var(--muted)";
@@ -1815,6 +1870,7 @@ function render(passive){try{
     if(prData&&prData.rp&&sN&&p){var exd=p-prData.rp,exc=exd>=0?"var(--up)":"var(--down)";
       h+=sr("盤中收盤",H(ps+fmP(prData.rp,tw)),"var(--muted)");
       h+=sr(sN+"變動",H((exd>=0?"+":"-")+ps+fmP(Math.abs(exd),tw)+" ("+(prData.rp>0?((exd/prData.rp*100>=0?"+":"")+fm(exd/prData.rp*100)):"—")+"%)"),exc)}
+    if(pos.cur==="USD"&&pos.tp!=="crypto"&&overnightStart(Date.now()))h+=sr("夜盤行情",prData&&prData.src==="y-night"&&prData.qt*1000>=overnightStart(Date.now())?"Yahoo 夜盤成交"+(prData.delay?" · 來源延遲 "+prData.delay+" 分":""):"尚無本場夜盤價，顯示最後報價","var(--muted)");
     if(prData&&prData.qt)h+=sr("報價時間",new Date(prData.qt*1000).toLocaleString("zh-TW"),"var(--muted)");
     h+=sr("數量",H(fmQ(pos.q)+" "+un+(tw?" ("+fmTW(pos.q*1000)+"股)":"")),"#fff");
     var tdR=computeTodayBreakdown(pf).map[S.det];if(tdR&&tdR.raw!=null)h+=sr("今日損益（含今天買賣）",H((tdR.raw>=0?"+":"-")+ps+f(Math.abs(tdR.raw))),tdR.raw>=0?"var(--up)":"var(--down)");
@@ -1883,10 +1939,11 @@ function render(passive){try{
   if(S.v==="cldet"&&S.clIdx!=null){
     var pf2=calc(),ci=S.clIdx;
     if(ci<0||ci>=pf2.cl.length){S.v="home";S.clIdx=null;render();return}
-    var c=pf2.cl[ci],tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm,un=tw?"張":"股",mul=tw?1000:1;
+    var c=pf2.cl[ci],tw=c.cur==="TWD",ps=moneySign(c.cur),f=tw?fmTW:fm,un=tw?"張":"股",mul=tw?1000:1;
     var g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",sellTotal=c.price*c.qty*mul,mQ=c.qty-(c.um||0),avgBuy=mQ>QE?c.cb/(mQ*mul):0;
     h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="set({v:\'closed\',clIdx:null})">‹</button><div class="brand"><span class="brand-name">'+c.s+'</span></div><div style="width:36px"></div></div><div class="scr"><div class="cnt">';
     h+='<div style="text-align:center;padding:14px 0 22px"><div style="font-size:28px;font-weight:700">'+c.s+'</div>';
+    if(pos.cur==="JPY")h+='<div style="font-size:12px;color:var(--muted)">日本東京市場 · 日圓／股</div>';
     if(tw)h+='<div style="font-size:10px;color:var(--amber);margin-top:4px;letter-spacing:0.5px;font-weight:600">🇹🇼 台股</div>';
     h+='<div style="margin-top:10px"><span class="badge sell-bg" style="font-size:12px;padding:4px 12px">已平倉</span></div>';
     h+='<div style="font-size:28px;font-weight:700;color:'+cl2+';margin-top:14px;letter-spacing:-0.5px">'+H((g?"+":"-")+ps+f(Math.abs(c.pnl)))+'</div>';
@@ -1918,11 +1975,11 @@ function render(passive){try{
 
   /* === Trade form === */
   if(S.v==="form"){
-    if(S.ed&&!F.id)initF(S.ed);var tw=F.cur==="TWD",ps=tw?"NT$":"$";S._fCur=F.cur;
+    if(S.ed&&!F.id)initF(S.ed);var tw=F.cur==="TWD",ps=moneySign(F.cur);S._fCur=F.cur;
     h+='<div class="hdr"><button class="hib" style="width:auto;padding:0 8px;font-size:18px;color:var(--muted)" onclick="S.ed=null;initF();set({v:\'home\'})">‹</button><div class="brand"><span class="brand-name">'+(S.ed?"編輯交易":"新增交易")+'</span></div><div style="width:36px"></div></div><div class="scr"><div class="cnt"><div class="card" style="padding:20px 18px">';
-    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button id="fcU" class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button id="fcT" class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button></div>';
+    h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">市場</div><div style="display:flex;gap:8px;margin-bottom:14px"><button id="fcU" class="tg '+(F.cur==="USD"?"on":"")+'" onclick="setFCur(\'USD\')">🇺🇸 美股</button><button id="fcT" class="tg '+(F.cur==="TWD"?"tw":"")+'" onclick="setFCur(\'TWD\')">🇹🇼 台股</button><button id="fcJ" class="tg '+(F.cur==="JPY"?"on":"")+'" onclick="setFCur(\'JPY\')">🇯🇵 日股</button></div>';
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.action==="buy"?"on":"")+'" onclick="setFAct(\'buy\')">買入</button><button class="tg '+(F.action==="sell"?"sell":"")+'" onclick="setFAct(\'sell\')">賣出</button></div>';
-    h+='<div id="fSymL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(tw?"2330":"TSLA")+'" autocomplete="off" autocapitalize="characters" spellcheck="false" style="margin-bottom:8px">';
+    h+='<div id="fSymL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(F.cur==="JPY"?"7203":tw?"2330":"TSLA")+'" autocomplete="off" autocapitalize="characters" spellcheck="false" style="margin-bottom:8px">';
     h+='<div id="fChips">'+symChipsHtml()+'</div><div style="height:6px"></div>';
     h+='<div style="display:flex;gap:10px;margin-bottom:6px"><div style="flex:1"><div id="fPL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div id="fQL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
     h+='<div id="fHint">'+fHintHtml()+'</div>';
@@ -1992,6 +2049,7 @@ function render(passive){try{
   if(!S.syncErr&&cfgOk()&&latStats().slow)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ GAS 變慢 ›</span>';
   if(S.newVer&&S.newVer!==APP_VER)h+=' · <span style="color:var(--blue);cursor:pointer;font-weight:700" onclick="applyUpdate(true)">⬆ 更新到 '+esc(S.newVer)+'</span>';
   if(S.syncErr)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ 未同步：'+(SYNC_SHORT[S.syncErr.kind]||"原因不明")+' ›</span>';
+  if(S.tr.some(function(t){return t.cur==="JPY"}))h+=S.jpyRate?" · 1 USD="+fm(S.jpyRate)+" JPY":" · 等待日圓匯率，跨幣別合計暫缺";
   if(S.rate)h+=' · 1 USD='+fm(S.rate)+' TWD';
   /* the first part (報價 …) is not always there; then the line would start with " · " */
   if(h.substr(pst0,3)===' · ')h=h.slice(0,pst0)+h.slice(pst0+3);
@@ -1999,7 +2057,7 @@ function render(passive){try{
 
   if(S.v==="home"){
     if(!S.tr.length){
-      h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">📊</div><div style="font-weight:700;font-size:22px;margin-bottom:8px;letter-spacing:-0.4px">開始追蹤投資</div><div style="color:var(--muted);font-size:13px;margin-bottom:24px">支援美股+台股 · 自動雲端同步</div></div>';
+      h+='<div style="text-align:center;padding:80px 20px"><div style="font-size:54px;margin-bottom:16px">📊</div><div style="font-weight:700;font-size:22px;margin-bottom:8px;letter-spacing:-0.4px">開始追蹤投資</div><div style="color:var(--muted);font-size:13px;margin-bottom:24px">支援美股、台股、日股 · 自動雲端同步</div></div>';
     } else {
       /* ----- Aggregates ----- */
       var tMV=0,tDB=0,tU=0,tRP=0,tTC=0,tDay=0;
@@ -2033,7 +2091,7 @@ function render(passive){try{
         for(var i=0;i<todayBreak.rows.length;i++){
           var r=todayBreak.rows[i];if(r.disp==null)continue;
           var col=r.disp>=0?"var(--up)":"var(--down)";
-          var rtw=r.cur==="TWD",rps=rtw?"NT$":"$",rf=rtw?fmTW:fm;
+          var rtw=r.cur==="TWD",rps=moneySign(r.cur),rf=rtw?fmTW:fm;
           h+='<div class="today-chip"><span class="today-chip-l"><span class="today-chip-sym">'+r.s+(r.closed?' <span style="font-size:9px;color:var(--dim)">已平</span>':'')+'</span>';
           if(r.px!=null)h+='<span class="today-chip-px">'+rps+fmP(r.px,rtw)+'</span>';
           if(r.pct!=null)h+='<span class="today-chip-pct" style="color:'+col+'">('+(r.pct>=0?"+":"")+fm(r.pct)+'%)</span>';
@@ -2097,12 +2155,12 @@ function render(passive){try{
       h+='<div class="section-label">HOLDINGS · 持倉</div>';
       var opsSorted=pf.op.slice().sort(function(a,b){var pa=gp(a.s),pb=gp(b.s);var va=toDisp(pa?pa*a.q*(a.cur==="TWD"?1000:1):a.c,a.cur),vb=toDisp(pb?pb*b.q*(b.cur==="TWD"?1000:1):b.c,b.cur);return vb-va});
       for(var i=0;i<opsSorted.length;i++){var x=opsSorted[i];if(isHidden(x.s))continue;
-        var p=gp(x.s),tw=x.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+        var p=gp(x.s),tw=x.cur==="TWD",ps=moneySign(x.cur),f=tw?fmTW:fm;
         var avgPS=tw?x.avg/1000:x.avg,mV=p?p*x.q*(tw?1000:1):null,u=p?(p*(tw?1000:1)-x.avg)*x.q:null,rt=p?((p*(tw?1000:1)-x.avg)/x.avg)*100:null;
         var pc=u!=null?(u>=0?"var(--up)":"var(--down)"):"var(--muted)",tCol=tickerColor(x.s);
         h+='<div class="hold" onclick="S.det=\''+x.s+'\';S.pv=\'\';set({v:\'det\'})">';
         h+='<div class="hold-top">';
-        h+='<div class="hold-logo" style="background:'+tCol+'22;color:'+tCol+'">'+(tw?'🇹🇼':x.s.charAt(0))+'</div>';
+        h+='<div class="hold-logo" style="background:'+tCol+'22;color:'+tCol+'">'+(tw?'🇹🇼':x.cur==="JPY"?'🇯🇵':x.s.charAt(0))+'</div>';
         h+='<div class="hold-mid"><div class="hold-sym">'+x.s+(tw?' <span class="badge tw-bg">台</span>':"")+((x.db>0)?' <span class="badge mgn-bg">融</span>':"")+'</div>';
         h+='<div class="hold-meta"><span style="white-space:nowrap">'+H(fmQ(x.q)+(tw?" 張":" 股"))+' @ '+ps+fmP(avgPS,tw)+'</span>'+(p?' · <span style="white-space:nowrap">現 '+ps+fmP(p,tw)+sessBadge(x.s)+'</span>':"")+'</div></div>';
         h+='<div class="hold-right"><div class="hold-pnl" style="color:'+pc+'">'+H(u!=null?(u>=0?"+":"-")+ps+f(Math.abs(u)):ps+f(x.c))+'</div>';
@@ -2136,7 +2194,7 @@ function render(passive){try{
       var hiddenOps=[];for(var i=0;i<pf.op.length;i++){if(isHidden(pf.op[i].s))hiddenOps.push(pf.op[i])}
       if(hiddenOps.length){
         h+='<div class="section-label" style="display:flex;justify-content:space-between;align-items:center">已隱藏 ('+hiddenOps.length+')<button onclick="S._showHidden=!S._showHidden;render()" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:11px;letter-spacing:0;text-transform:none;font-weight:600">'+(S._showHidden?"▲ 收起":"▼ 展開")+'</button></div>';
-        if(S._showHidden){for(var i=0;i<hiddenOps.length;i++){var x=hiddenOps[i],tw=x.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+        if(S._showHidden){for(var i=0;i<hiddenOps.length;i++){var x=hiddenOps[i],tw=x.cur==="TWD",ps=moneySign(x.cur),f=tw?fmTW:fm;
           h+='<div class="card" style="display:flex;justify-content:space-between;align-items:center;opacity:.55;padding:10px 14px;border-radius:14px"><div><div style="font-weight:700;font-size:13px">'+x.s+'</div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(x.q)+(tw?" 張":" 股"))+'</div></div><button onclick="toggleHidePos(\''+x.s+'\')" style="background:var(--up-soft);border:1px solid var(--up);color:var(--up);padding:5px 11px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer">顯示</button></div>'}}
       }
 
@@ -2174,7 +2232,7 @@ function render(passive){try{
       h+='<div class="card" style="border-left:3px solid '+clCol+';margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;padding:14px 16px"><div><div style="font-size:10px;color:var(--muted);margin-bottom:3px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase">已實現盈虧合計</div><div style="font-size:18px;font-weight:700;color:'+clCol+';letter-spacing:-0.3px">'+H((clRP>=0?"+":"-")+D+dfm(Math.abs(clRP)))+'</div></div><div style="font-size:15px;font-weight:700;color:'+clCol+'">'+H((clPct>=0?"+":"")+fm(clPct)+"%")+'</div></div>';
       h+=closedStatsHtml(clArr,S.clF.r);
       if(!clArr.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
-      for(var i=0;i<clArr.length;i++){var c=clArr[i].c,cIx=clArr[i].ix,cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=dtLabel(c),g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+      for(var i=0;i<clArr.length;i++){var c=clArr[i].c,cIx=clArr[i].ix,cSym=c.s||"???",cQty=c.qty||0,cPrice=c.price||0,cDate=dtLabel(c),g=c.pnl>=0,cl2=g?"var(--up)":"var(--down)",tw=c.cur==="TWD",ps=moneySign(c.cur),f=tw?fmTW:fm;
         h+='<div class="hold" onclick="S.clIdx='+cIx+';set({v:\'cldet\'})"><div class="hold-top">';
         h+='<div class="hold-logo" style="background:'+(g?"var(--up-soft)":"var(--down-soft)")+';color:'+cl2+';font-size:14px">✓</div>';
         h+='<div class="hold-mid"><div class="hold-sym">'+cSym+(tw?' <span class="badge tw-bg">台</span>':"")+'</div><div class="hold-meta">'+H(fmQ(cQty)+(tw?" 張":" 股"))+" @ "+ps+fmP(cPrice,tw)+" · "+cDate+(c.um>QE?' · <span style="color:var(--amber)">⚠ 缺 '+H(fmQ(c.um))+(tw?' 張':' 股')+'買入</span>':'')+'</div></div>';

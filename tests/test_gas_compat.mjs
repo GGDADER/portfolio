@@ -9,6 +9,7 @@ new vm.Script(script);
 const merge = script.slice(script.indexOf("function mergeCore("), script.indexOf("function trDesc("));
 const gasCode = script.slice(script.indexOf("function gasCode(){"), script.indexOf("function copyGAS("));
 const gas = vm.runInNewContext(merge + gasCode + ";gasCode()");
+assert.equal(gas.trim(), readFileSync(new URL("../Code.gs", import.meta.url), "utf8").replace(/\r\n/g, "\n").trim());
 const rows = [];
 let locked = false;
 const sheet = {
@@ -43,7 +44,7 @@ function post(trades, del = {}) {
 }
 function read() { return server.doGet({ parameter: { action: "read" } }); }
 const buy = { id: "original", symbol: "TEST", action: "buy", qty: 1, price: 10, date: "2026-01-01" };
-assert.equal(server.doGet({ parameter: { action: "ping" } }).version, "v12");
+assert.equal(server.doGet({ parameter: { action: "ping" } }).version, "v13");
 assert.equal(post([buy]).ok, true);
 const other = { ...buy, id: "other", price: 12 };
 assert.equal(post([other]).n, 2);
@@ -57,4 +58,25 @@ post([buy, other]);
 assert.deepEqual(JSON.parse(read().trades).map(t => t.id), ["other", "original-r"]);
 assert.deepEqual(JSON.parse(read().del), { original: 3 });
 assert.equal(locked, false);
-console.log("GAS v12 OK — read, edit, delete, stale device, restore and resync");
+const nightTs = Date.parse("2026-11-24T02:00:00Z") / 1000; // Monday 21:00 ET
+server.Date = class extends Date { constructor(...args){ super(...(args.length ? args : [nightTs*1000])); } static now(){return nightTs*1000;} };
+server.Utilities = {formatDate: (_, zone, pattern) => pattern === "u" ? "1" : "21:00:00"};
+server.yahooAuth = () => ({cookie:"fixture",crumb:"fixture"});
+let quote = {symbol:"TEST",regularMarketPrice:20,overnightMarketPrice:22,overnightMarketTime:nightTs-60};
+server.UrlFetchApp = {fetch: url => {
+  assert.ok(url.includes("overnightPrice=true"));
+  return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({quoteResponse:{result:[quote]}})};
+}};
+let prices = {};
+server.addNightPrices(["TEST","7203.T"],prices);
+assert.equal(prices.TEST.p,22);
+assert.equal(prices.TEST.prev,20);
+assert.equal(prices.TEST.ts,nightTs-60);
+prices = {TEST:{p:20,ts:nightTs-7200}};
+quote.overnightMarketTime = nightTs-4000;
+server.addNightPrices(["TEST"],prices);
+assert.equal(prices.TEST.p,20);
+delete quote.overnightMarketTime;
+server.addNightPrices(["TEST"],prices);
+assert.equal(prices.TEST.p,20);
+console.log("GAS v13 OK — sync, restore, overnight price and stale-data fallback");

@@ -112,12 +112,12 @@ class PortfolioTests(unittest.TestCase):
         p.evaluate("S.tr.reverse(); S.tr.find(t=>t.action==='sell').lots=[]")
         self.assertEqual(p.evaluate("calc().cl[0].pnl"), 18)
 
-    def test_trade_search_and_overnight_link(self):
+    def test_trade_search(self):
         p = self.page
         p.evaluate("""storeTrades(S.tr.concat({...S.tr[0],id:'tw',symbol:'2330',cur:'TWD'}));render()""")
         p.locator(".hold").filter(has_text="DEMO").first.click()
         link = p.get_by_role("link", name="查看 TradingView 夜盤")
-        expect(link).to_have_attribute("href", "https://www.tradingview.com/chart/?symbol=BOATS%3ADEMO")
+        expect(link).to_have_count(0)
         p.evaluate("set({v:'home',det:null})")
         p.locator(".hold").filter(has_text="2330").first.click()
         expect(link).to_have_count(0)
@@ -143,6 +143,51 @@ class PortfolioTests(unittest.TestCase):
         expect(search).to_have_value("33")
         symbols.select_option("DEMO")
         expect(search).to_have_value("")
+
+    def test_japan_trade_price_currency_and_fifo(self):
+        p = self.page
+        p.evaluate("S.jpyRate=150; S.rate=30")
+        p.locator(".fab").click()
+        p.get_by_role("button", name="日股").click()
+        p.locator("#f_s").fill("7203")
+        p.locator("#f_p").fill("3000")
+        p.locator("#f_q").fill("100")
+        p.locator("#f_fe").fill("150")
+        expect(p.locator("#ftot")).to_contain_text("¥300,000")
+        p.locator("#sbtn").click()
+        self.assertEqual(p.evaluate("calc().op.find(x=>x.cur==='JPY').c"), 300150)
+        self.assertEqual(p.evaluate("S.tr.at(-1).symbol"), "7203.T")
+        self.assertTrue(p.evaluate("validImportTrade(S.tr.at(-1)) && isJP('130A.T')"))
+        p.evaluate("""storeTrades(S.tr.concat({...S.tr.at(-1),symbol:'7203',id:'tw2',cur:'TWD'},
+            {...S.tr.at(-1),action:'sell',qty:50,price:3100,fee:80,fr:0,id:'jsale'}));
+            S.pr['7203.T']={p:3200,pc:3000};snapHistory();""")
+        self.assertEqual(p.evaluate("calc().cl.find(x=>x.id==='jsale').pnl"), 4845)
+        self.assertEqual(p.evaluate("calc().op.find(x=>x.s==='7203.T').q"), 50)
+        self.assertEqual(p.evaluate("toDisp(15000,'JPY')"), 100)
+        self.assertAlmostEqual(p.evaluate("ld(HK,[]).at(-1).u"), 3200*50/150+66)
+        self.assertEqual(p.evaluate("S.cur='TWD';toDisp(15000,'JPY')"), 3000)
+        p.evaluate("quickTrade('7203.T','sell')")
+        expect(p.locator("#fHint")).to_contain_text("可賣 50")
+        expect(p.locator("#fPL")).to_contain_text("¥")
+
+    def test_overnight_price_updates_position(self):
+        p = self.page
+        p.clock.set_fixed_time("2026-11-24T10:00:00+08:00")
+        p.wait_for_function("!S.pBusy")
+        p.evaluate("""batchQuotes=async (syms,night)=>{
+            if(!night)throw Error('night session missing');
+            return {DEMO:{p:32,prev:25,rp:25,ts:Date.now()/1000-120,src:'y-night',sess:'overnight'}};
+        };fetchPrices(false)""")
+        p.wait_for_function("!S.pBusy && gp('DEMO')===32")
+        expect(p.locator(".hold").filter(has_text="DEMO").first).to_contain_text("夜盤")
+        p.locator(".hold").filter(has_text="DEMO").first.click()
+        expect(p.get_by_text("Yahoo 夜盤成交", exact=True)).to_be_visible()
+        expect(p.get_by_text("$96.00", exact=True).first).to_be_visible()
+        p.evaluate("""batchQuotes=async()=>({DEMO:{p:20,ts:Date.now()/1000-4000,sess:'closed'}});
+            fetchPrices(false)""")
+        p.wait_for_function("!S.pBusy")
+        self.assertEqual(p.evaluate("gp('DEMO')"),32)
+        self.assertEqual(p.evaluate("overnightStart(Date.parse('2026-11-21T02:00:00Z'))"),0)
 
     def test_import_only_previewed_rows(self):
         p = self.page
