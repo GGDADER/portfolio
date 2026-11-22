@@ -184,7 +184,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v10.1";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v10.2";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v12";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -1319,11 +1319,31 @@ function filterBar(key,fst,symList,years){
   h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.'+key+'.r=this.value;render()">';
   for(var i=0;i<ranges.length;i++)h+='<option value="'+ranges[i][0]+'"'+(fst.r===ranges[i][0]?" selected":"")+'>'+ranges[i][1]+'</option>';
   h+='</select>';
-  h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" onchange="S.'+key+'.s=this.value;render()">';
+  h+='<select class="inp" style="flex:1;padding:9px 10px;font-size:13px" id="tradeSymbol" onchange="S.'+key+'.s=this.value;delete S.'+key+'.q;render()">';
   h+='<option value="all"'+(fst.s==="all"?" selected":"")+'>全部個股</option>';
   for(var i=0;i<symList.length;i++)h+='<option value="'+symList[i]+'"'+(fst.s===symList[i]?" selected":"")+'>'+symList[i]+'</option>';
   h+='</select></div>';
   return h}
+
+function searchTrades(value){
+  S.trF.q=value;
+  if(value.trim()){S.trF.s="all";document.getElementById("tradeSymbol").value="all"}
+  document.getElementById("tradeResults").innerHTML=tradeResults();
+}
+function tradeResults(){
+  var h="",query=(S.trF.q||"").trim().toUpperCase();
+    var tFrom=filterFrom(S.trF.r),tTo=filterTo(S.trF.r);
+    var tFiltered=[];for(var i=0;i<S.tr.length;i++){var t0=S.tr[i];if(tFrom&&(!t0.date||t0.date<tFrom))continue;if(tTo&&t0.date>tTo)continue;if(S.trF.s!=="all"&&t0.symbol!==S.trF.s)continue;if(query&&String(t0.symbol).toUpperCase().indexOf(query)<0)continue;tFiltered.push(t0)}
+    h+='<div class="section-label">交易紀錄 ('+tFiltered.length+'/'+S.tr.length+')</div>';
+    if(!tFiltered.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">目前條件找不到交易</div>';
+    var tIx={};for(var ti=0;ti<S.tr.length;ti++)tIx[S.tr[ti].id]=ti;
+    var sorted=tFiltered.sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?1:-1;return(tIx[b.id]||0)-(tIx[a.id]||0)});
+    for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
+      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+fmP(tPrice,tw)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(tQty)+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
+      h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
+      h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
+  return h;
+}
 
 function clSymListHtml(){
   var pf2=calc(),syms={},i;
@@ -1783,6 +1803,9 @@ function render(passive){try{
     h+='</div>';
     h+='<div style="display:flex;gap:10px;margin-bottom:10px"><button class="bp" style="padding:12px" onclick="quickTrade(\''+S.det+'\',\'buy\')">＋ 買入</button><button class="bp" style="padding:12px;background:var(--down);color:#fff" onclick="quickTrade(\''+S.det+'\',\'sell\')">－ 賣出</button></div>';
     h+='<div class="card" style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;letter-spacing:0.5px">更新報價 ('+ps+'每股)</div><div style="display:flex;gap:8px"><input type="number" step="any" inputmode="decimal" class="inp" style="flex:1" value="'+esc(S.pv)+'" oninput="S.pv=this.value" placeholder="'+(p||"輸入")+'"><button class="bp" style="flex:none;padding:10px 18px" onclick="savePr()">更新</button></div></div>';
+    if(!tw&&pos.tp!=="crypto"&&/^[A-Z][A-Z0-9.\-]*$/.test(S.det)){
+      h+='<a class="bs" style="display:block;text-align:center;text-decoration:none;margin-bottom:10px" target="_blank" rel="noopener noreferrer" href="https://www.tradingview.com/chart/?symbol='+encodeURIComponent("BOATS:"+S.det)+'">查看 TradingView 夜盤 ↗</a>';
+    }
     var prData=S.pr[S.det],pcv=prData&&prData.pc?prData.pc:null;
     h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:10px">';
     var dayChg=p&&pcv?(p-pcv):null,dayPct=pcv&&pcv>0?((p-pcv)/pcv*100):null,dcCol=dayChg!=null?(dayChg>=0?"var(--up)":"var(--down)"):"var(--muted)";
@@ -2161,17 +2184,9 @@ function render(passive){try{
     if(!S.trF)S.trF={r:"all",s:"all"};
     var tsyms={};for(var i=0;i<S.tr.length;i++){if(S.tr[i].symbol)tsyms[S.tr[i].symbol]=1}
     var tsymList=[];for(var tk in tsyms)tsymList.push(tk);tsymList.sort();
-    var tFrom=filterFrom(S.trF.r),tTo=filterTo(S.trF.r);
-    var tFiltered=[];for(var i=0;i<S.tr.length;i++){var t0=S.tr[i];if(tFrom&&(!t0.date||t0.date<tFrom))continue;if(tTo&&t0.date>tTo)continue;if(S.trF.s!=="all"&&t0.symbol!==S.trF.s)continue;tFiltered.push(t0)}
-    h+='<div class="section-label">交易紀錄 ('+tFiltered.length+'/'+S.tr.length+')</div>';
     h+=filterBar('trF',S.trF,tsymList,yearRanges(S.tr.map(function(x){return x.date}),S.trF.r));
-    if(!tFiltered.length)h+='<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:13px">此篩選條件下沒有紀錄</div>';
-    var tIx={};for(var ti=0;ti<S.tr.length;ti++)tIx[S.tr[ti].id]=ti;
-    var sorted=tFiltered.sort(function(a,b){var ka=dtKey(a),kb=dtKey(b);if(ka!==kb)return ka<kb?1:-1;return(tIx[b.id]||0)-(tIx[a.id]||0)});
-    for(var i=0;i<sorted.length;i++){var t=sorted[i],tSym=t.symbol||"???",tPrice=t.price||0,tQty=t.qty||0,buy=t.action==="buy",tw=t.cur==="TWD",ps=tw?"NT$":"$",f=tw?fmTW:fm;
-      h+='<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px"><div style="width:3px;height:36px;border-radius:2px;background:'+(buy?"var(--up)":"var(--down)")+'"></div><div style="flex:1"><div style="display:flex;gap:6px;align-items:center;margin-bottom:2px"><span class="badge '+(buy?"buy-bg":"sell-bg")+'">'+(buy?"買入":"賣出")+'</span>'+(tw?'<span class="badge tw-bg">台</span>':"")+(isMargin(t)?'<span class="badge mgn-bg">融</span>':"")+'<span style="font-weight:700;font-size:13px">'+tSym+'</span><span style="color:var(--muted);font-size:12px">@'+ps+fmP(tPrice,tw)+'</span></div><div style="font-size:11px;color:var(--muted)">'+H(fmQ(tQty)+(tw?" 張":" 股"))+" · "+H(ps+f(tQty*tPrice*(tw?1000:1)))+(trFee(t)>0?' · 費 '+ps+f(trFee(t)):"")+" · "+dtLabel(t)+'</div></div>';
-      h+='<button onclick="var t=findTr(\''+t.id+'\');if(t){S.ed=JSON.parse(JSON.stringify(t));initF(S.ed);set({v:\'form\'})}" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">✏️</button>';
-      h+='<button onclick="set({del:findTr(\''+t.id+'\')})" style="background:0;border:0;color:var(--muted);cursor:pointer;font-size:14px">🗑</button></div>'}
+    h+='<input type="search" id="tradeSearch" class="inp" style="margin-bottom:10px;font-size:16px" aria-label="搜尋交易代號" placeholder="輸入全部或部分代號" autocapitalize="characters" autocomplete="off" spellcheck="false" value="'+esc(S.trF.q||"")+'" oninput="searchTrades(this.value)">';
+    h+='<div id="tradeResults">'+tradeResults()+'</div>';
   }
   h+='</div></div>';h+=nav(S.v);
   if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:12px;font-size:15px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="if(delTrades([S.del.id])){S.del=null;toast(\'已刪除，可至「備份與復原」補回\')}">刪除</button></div></div></div>';

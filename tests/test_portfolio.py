@@ -112,6 +112,38 @@ class PortfolioTests(unittest.TestCase):
         p.evaluate("S.tr.reverse(); S.tr.find(t=>t.action==='sell').lots=[]")
         self.assertEqual(p.evaluate("calc().cl[0].pnl"), 18)
 
+    def test_trade_search_and_overnight_link(self):
+        p = self.page
+        p.evaluate("""storeTrades(S.tr.concat({...S.tr[0],id:'tw',symbol:'2330',cur:'TWD'}));render()""")
+        p.locator(".hold").filter(has_text="DEMO").first.click()
+        link = p.get_by_role("link", name="查看 TradingView 夜盤")
+        expect(link).to_have_attribute("href", "https://www.tradingview.com/chart/?symbol=BOATS%3ADEMO")
+        p.evaluate("set({v:'home',det:null})")
+        p.locator(".hold").filter(has_text="2330").first.click()
+        expect(link).to_have_count(0)
+        p.evaluate("set({v:'home',det:null})")
+        p.locator(".nb").filter(has_text="交易").click()
+        search = p.get_by_role("searchbox", name="搜尋交易代號")
+        symbols = p.locator("#tradeSymbol")
+        rows = p.locator("#tradeResults .card")
+        symbols.select_option("2330")
+        expect(rows).to_have_count(1)
+        search.press_sequentially("em")
+        expect(search).to_be_focused()
+        expect(rows).to_have_count(3)
+        expect(symbols).to_have_value("all")
+        search.fill(" zz ")
+        expect(p.get_by_text("目前條件找不到交易")).to_be_visible()
+        search.fill("")
+        expect(rows).to_have_count(4)
+        search.fill("33")
+        expect(rows).to_have_count(1)
+        p.locator("select").first.select_option("today")
+        expect(rows).to_have_count(0)
+        expect(search).to_have_value("33")
+        symbols.select_option("DEMO")
+        expect(search).to_have_value("")
+
     def test_import_only_previewed_rows(self):
         p = self.page
         self.menu("匯入合併")
