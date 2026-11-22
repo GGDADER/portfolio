@@ -244,7 +244,8 @@ class PortfolioTests(unittest.TestCase):
         }"""))
         p.evaluate("localStorage.setItem('other-app','keep')")
         p.once("dialog", lambda d: d.accept())
-        p.evaluate("setTimeout(clearCfg,0)")
+        with p.expect_event("load"):
+            p.evaluate("setTimeout(clearCfg,0)")
         expect(p.get_by_text("首次設定", exact=True)).to_be_visible()
         self.assertEqual(p.evaluate("localStorage.getItem('other-app')"), "keep")
         self.assertIsNone(p.evaluate("localStorage.getItem(TK)"))
