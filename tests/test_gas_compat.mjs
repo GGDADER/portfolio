@@ -37,9 +37,9 @@ const services = {
 };
 const server = vm.createContext(services);
 vm.runInContext(gas, server);
-function post(trades, del = {}) {
+function post(trades, del = {}, prices = {}) {
   return server.doPost({ postData: { contents: JSON.stringify({
-    trades: JSON.stringify(trades), del: JSON.stringify(del), prices: "{}", history: "[]",
+    trades: JSON.stringify(trades), del: JSON.stringify(del), prices: JSON.stringify(prices), history: "[]",
   }) } });
 }
 function read() { return server.doGet({ parameter: { action: "read" } }); }
@@ -58,6 +58,16 @@ post([buy, other]);
 assert.deepEqual(JSON.parse(read().trades).map(t => t.id), ["other", "original-r"]);
 assert.deepEqual(JSON.parse(read().del), { original: 3 });
 assert.equal(locked, false);
+const contract = "OPT:DEMO:2026-11-20:C:25:100";
+const sellCall = {id:"sc",type:"option",broker:"IBKR",symbol:contract,cur:"USD",date:"2026-11-18",
+  effect:"open",action:"sell",price:1.25,qty:1,fee:1,seq:10};
+const mark = { p:0.45,at:100,src:"option-manual" };
+post([sellCall], {}, {[contract]:mark});
+const expiry = {...sellCall,id:"exp",date:"2026-11-20",effect:"expire",action:"buy",price:0,fee:0,seq:20};
+post([expiry]);
+post([other]);
+assert.deepEqual(JSON.parse(read().trades).filter(t=>t.type==="option"), [sellCall,expiry]);
+assert.deepEqual(JSON.parse(read().prices)[contract], mark);
 const nightTs = Date.parse("2026-11-24T02:00:00Z") / 1000; // Monday 21:00 ET
 server.Date = class extends Date { constructor(...args){ super(...(args.length ? args : [nightTs*1000])); } static now(){return nightTs*1000;} };
 server.Utilities = {formatDate: (_, zone, pattern) => pattern === "u" ? "1" : "21:00:00"};

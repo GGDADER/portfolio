@@ -189,6 +189,111 @@ class PortfolioTests(unittest.TestCase):
         self.assertEqual(p.evaluate("gp('DEMO')"),32)
         self.assertEqual(p.evaluate("overnightStart(Date.parse('2026-11-21T02:00:00Z'))"),0)
 
+    def test_ibkr_short_call_entry_mark_buyback_and_statement(self):
+        p = self.page
+        p.locator(".fab").click()
+        p.get_by_role("button", name="IBKR 期權", exact=True).click()
+        expect(p.locator("[name=mode]")).to_have_value("STO")
+        expect(p.locator("[name=right]")).to_have_value("C")
+        p.locator("#opt_root").fill("demo")
+        p.locator("#opt_expiry").fill("2026-12-18")
+        p.locator("#opt_strike").fill("25")
+        p.locator("#opt_qty").fill("2")
+        p.locator("#opt_price").fill("1.5")
+        p.locator("#opt_fee").fill("2")
+        p.locator("#opt_date").fill("2026-11-17")
+        expect(p.locator("#opt_preview")).to_have_text("淨收 US$298.00")
+        if os.getenv("SCREENSHOT_DIR"):
+            out = Path(os.environ["SCREENSHOT_DIR"])
+            out.mkdir(parents=True, exist_ok=True)
+            p.locator("#opt_root").scroll_into_view_if_needed()
+            p.screenshot(path=out / f"options-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
+        self.assertTrue(p.evaluate("""[...document.querySelectorAll('#optionForm input')].every(e=>{
+            const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1})"""))
+        p.get_by_role("button", name="儲存期權交易").click()
+        expect(p.locator("#tradeResults")).to_contain_text("賣出開倉")
+        self.assertEqual(p.evaluate("calc().op.map(x=>[x.s,x.q])"), [["DEMO", 3]])
+        self.assertEqual(p.evaluate("calc().options.unrealized"), -2)
+        self.assertEqual(p.evaluate("healthReport().iss.filter(x=>x.lv===0).length"), 0)
+        p.locator(".nb").filter(has_text="總覽").click()
+        p.locator(".opt-row").click()
+        p.locator("input[name=mark]").fill("0.90")
+        p.get_by_role("button", name="儲存權利金現價").click()
+        self.assertEqual(p.evaluate("calc().options.unrealized"), 118)
+        p.get_by_role("button", name="買回平倉", exact=True).click()
+        expect(p.locator("[name=mode]")).to_have_value("BTC")
+        expect(p.locator("#opt_qty")).to_have_value("2")
+        p.locator("#opt_qty").fill("1")
+        p.locator("#opt_price").fill("0.50")
+        p.locator("#opt_fee").fill("1")
+        expect(p.locator("#opt_preview")).to_have_text("淨付 US$51.00")
+        p.get_by_role("button", name="儲存期權交易").click()
+        self.assertEqual(p.evaluate("""() => {const b=calc().options,g=[...b.groups.values()][0];
+            return [g.qty,g.basis,g.value,g.unrealized,g.realized,g.cash]}"""), [-1, -149, -90, 59, 98, 247])
+        self.assertEqual(p.evaluate("ld(HK,[]).at(-1).u"), 66 - 90)
+        self.assertEqual(p.evaluate("calc().op[0].q"), 3)
+        p.locator(".nb").filter(has_text="平倉").click()
+        p.locator(".hold").filter(has_text="Call").click()
+        expect(p.locator("#app")).to_contain_text("US$98.00")
+        self.assertEqual(p.evaluate("parseImport(JSON.stringify(backupData())).tr.length"), 5)
+        p.evaluate("syncNow()")
+        p.wait_for_function("!S.syncing && !S._syT")
+        p.reload()
+        expect(p.locator(".opt-row")).to_contain_text("賣方")
+        self.assertEqual(p.evaluate("calc().options.closed[0].pnl"), 98)
+
+    def test_option_fifo_contract_identity_fees_and_expiry(self):
+        p = self.page
+        result = p.evaluate("""() => {
+          const symbol='OPT:DEMO1:2026-11-20:P:25.5:10';
+          const base={type:'option',symbol,action:'buy',effect:'open',cur:'USD',date:'2026-11-10',id:'a',price:2,qty:2,fee:2};
+          const b={...base,id:'b',date:'2026-11-11',price:4,qty:2};
+          const sale={...b,id:'c',date:'2026-11-18',action:'sell',effect:'close',price:5,qty:3,fee:3};
+          const expire={...sale,id:'d',date:'2026-11-20',effect:'expire',qty:1,price:0,fee:0};
+          const other=['OPT:DEMO1:2026-11-20:C:25.5:10','OPT:DEMO1:2026-11-20:P:26:10',
+            'OPT:DEMO1:2026-11-27:P:25.5:10','OPT:DEMO1:2026-11-20:P:25.5:100'].map(
+            (s,i)=>({...base,symbol:s,id:'ind'+i,action:'sell',qty:1,fee:0}));
+          const rows=[sale,b,expire,base,...other],book=optionBook(rows,{});
+          return [book.groups.size,book.groups.get(symbol).qty,book.closed.map(c=>c.pnl),
+            book.closed[0].matches.map(m=>m.qty),book.issues.size,
+            parseImport(JSON.stringify(rows)).tr.length,
+            validImportTrade({...expire,effect:'open'}),validImportTrade({...base,qty:0.5}),
+            optionBook([sale],{}).issues.has('c'),optionBook([base,{...b,action:'sell'}],{}).issues.has('b')];
+        }""")
+        self.assertEqual(result, [5, 0, [64, -41], [2, 1], 0, 8, False, False, True, True])
+
+    def test_option_edit_delete_recover_and_reject_excess_close(self):
+        p = self.page
+        p.evaluate("""storeTrades(S.tr.concat({type:'option',id:'opt-open',broker:'IBKR',action:'sell',
+            effect:'open',symbol:'OPT:DEMO:2026-11-19:C:25:100',cur:'USD',date:'2026-11-10',qty:2,price:1,fee:2}));
+            set({v:'trades'})""")
+        p.get_by_role("button", name="編輯期權").click()
+        p.locator("#opt_price").fill("1.25")
+        p.get_by_role("button", name="儲存期權交易").click()
+        p.get_by_role("button", name="刪除期權").click()
+        p.locator(".modal").get_by_role("button", name="刪除", exact=True).click()
+        p.locator(".nb").filter(has_text="總覽").click()
+        self.menu("備份與復原")
+        p.get_by_role("button", name="檢視並復原").click()
+        expect(p.locator(".modal")).to_contain_text("賣出開倉")
+        p.get_by_role("button", name="補入 1 筆").click()
+        p.get_by_role("button", name="返回總覽").click()
+        p.locator(".opt-row").click()
+        p.get_by_role("button", name="登記到期歸零").click()
+        p.locator("#opt_qty").fill("3")
+        seen = []
+        def dismiss(dialog):
+            seen.append(dialog.message)
+            dialog.dismiss()
+        p.once("dialog", dismiss)
+        p.get_by_role("button", name="儲存期權交易").click()
+        self.assertIn("平倉口數超過", seen[0])
+        p.locator("#opt_qty").fill("2")
+        p.get_by_role("button", name="儲存期權交易").click()
+        self.assertEqual(p.evaluate("calc().options.closed[0].pnl"), 248)
+        self.assertEqual(p.evaluate("calc().op[0].q"), 3)
+        expect(p.locator("#tradeResults")).to_contain_text("到期歸零")
+
     def test_import_only_previewed_rows(self):
         p = self.page
         self.menu("匯入合併")
