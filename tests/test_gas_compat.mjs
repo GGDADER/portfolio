@@ -68,6 +68,26 @@ post([expiry]);
 post([other]);
 assert.deepEqual(JSON.parse(read().trades).filter(t=>t.type==="option"), [sellCall,expiry]);
 assert.deepEqual(JSON.parse(read().prices)[contract], mark);
+const market = {p:0.32,at:120000,qt:120,src:"option-yahoo"};
+post([],{}, {[contract]:market});
+post([],{}, {[contract]:mark});
+assert.deepEqual(JSON.parse(read().prices)[contract],market);
+const manual = {...mark,at:130000};
+post([],{}, {[contract]:manual});
+post([],{}, {[contract]:market});
+assert.deepEqual(JSON.parse(read().prices)[contract],manual);
+// Options use the existing v13 chart batch, even in an options-only portfolio.
+const ticker="TSLL261127C00010000", printTs=Date.parse("2026-11-23T20:59:41Z")/1000;
+server.UrlFetchApp={fetchAll:requests=>{
+  assert.equal(requests.length,1);
+  assert.equal(new URL(requests[0].url).pathname,"/v8/finance/chart/"+ticker);
+  const chart={chart:{result:[{meta:{symbol:ticker,instrumentType:"OPTION",
+    regularMarketPrice:0.39,regularMarketTime:printTs}}]}};
+  return [{getResponseCode:()=>200,getContentText:()=>JSON.stringify(chart)}];
+}};
+const batch=server.doGet({parameter:{action:"quotes",syms:ticker,mkt:"us"}});
+assert.equal(batch.q[ticker].p,0.39);
+assert.equal(batch.q[ticker].ts,printTs);
 const nightTs = Date.parse("2026-11-24T02:00:00Z") / 1000; // Monday 21:00 ET
 server.Date = class extends Date { constructor(...args){ super(...(args.length ? args : [nightTs*1000])); } static now(){return nightTs*1000;} };
 server.Utilities = {formatDate: (_, zone, pattern) => pattern === "u" ? "1" : "21:00:00"};
@@ -89,4 +109,4 @@ assert.equal(prices.TEST.p,20);
 delete quote.overnightMarketTime;
 server.addNightPrices(["TEST"],prices);
 assert.equal(prices.TEST.p,20);
-console.log("GAS v13 OK — sync, restore, overnight price and stale-data fallback");
+console.log("GAS v13 OK — sync, restore, option quotes, overnight price and stale-data fallback");

@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -241,6 +241,137 @@ class PortfolioTests(unittest.TestCase):
         p.reload()
         expect(p.locator(".opt-row")).to_contain_text("賣方")
         self.assertEqual(p.evaluate("calc().options.closed[0].pnl"), 98)
+
+    def test_option_only_auto_quote_on_open_and_manual_refresh(self):
+        p = self.page
+        key = "OPT:TSLL:2026-11-27:C:10:100"
+        ticker = "TSLL261127C00010000"
+        trade = dict(id="short", symbol=key, type="option", cur="USD", broker="IBKR",
+                     effect="open", action="sell", date="2026-11-17", price=0.41, qty=15)
+        p.evaluate("row=>{storeTrades([row]);S.pr={};sv(PK,S.pr)}", trade)
+        quote_time = p.evaluate("Math.floor(Date.now()/1000)-960")
+        quotes = {ticker: dict(p=0.31, ts=quote_time, src="meta", sess="regular")}
+        queries = []
+
+        def market(route):
+            query = parse_qs(urlsplit(route.request.url).query)
+            queries.append(query)
+            route.fulfill(json=dict(ok=True, q=quotes))
+
+        p.route("**/gas?action=quotes&**", market)
+        p.reload()
+        row = p.locator(".opt-row")
+        expect(row).to_contain_text("Yahoo 市場成交")
+        expect(row).to_contain_text("約延遲 15 分鐘")
+        expect(row).to_contain_text("US$0.31")
+        self.assertTrue(queries)
+        self.assertTrue(all(q["syms"] == [ticker] and "night" not in q for q in queries))
+        self.assertEqual(p.evaluate("s=>S.pr[s].at", key), quote_time * 1000)
+        self.assertAlmostEqual(p.evaluate("calc().options.value"), -465)
+        self.assertAlmostEqual(p.evaluate("calc().options.unrealized"), 150)
+        row.click()
+        expect(p.locator("#app")).to_contain_text("11/20")
+        if os.getenv("SCREENSHOT_DIR"):
+            out = Path(os.environ["SCREENSHOT_DIR"])
+            out.mkdir(parents=True, exist_ok=True)
+            p.screenshot(path=out / f"option-quote-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
+        self.assertTrue(p.evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        update = p.get_by_role("button", name="更新期權報價")
+        quotes.clear()
+        update.click()
+        expect(p.get_by_text("行情來源暫無這張合約的成交資料，沿用上方估值。")).to_be_visible()
+        self.assertEqual(p.evaluate("s=>ld(PK,{})[s].at", key), quote_time * 1000)
+        p.locator("input[name=mark]").fill("0.29")
+        p.get_by_role("button", name="儲存權利金現價").click()
+        quotes[ticker] = dict(p=0.31, ts=quote_time, src="meta")
+        update.click()
+        expect(p.locator("#app")).to_contain_text("沿用上方估值")
+        self.assertEqual(p.evaluate("s=>S.pr[s].src", key), "option-manual")
+        p.clock.set_fixed_time("2026-11-20T02:00:00+08:00")
+        quotes[ticker] = dict(p=0.21, ts=p.evaluate("Math.floor(Date.now()/1000)-901"), src="meta")
+        update.click()
+        p.wait_for_function("!S.pBusy && calc().options.value===-315")
+        self.assertEqual(p.evaluate("calc().options.unrealized"), 300)
+        self.assertEqual(p.evaluate("calc().options.groups.values().next().value.realized"), 0)
+
+    def test_option_poll_updates_again_without_a_tap(self):
+        p = self.page
+        p.clock.install(time="2026-11-20T01:23:45+08:00")
+        p.clock.pause_at("2026-11-20T01:24:00+08:00")
+        p.evaluate("""() => {
+            const open={id:'a-call',symbol:'OPT:TSLL:2026-11-27:C:10:100',type:'option',cur:'USD',
+              action:'sell',effect:'open',price:0.41,qty:1,date:'2026-11-17'};
+            storeTrades(S.tr.concat(open,{...open,id:'a-put',symbol:'OPT:TSLL:2026-11-27:P:10:100'}));
+        }""")
+        ticker = "TSLL261127C00010000"
+        stamp = p.evaluate("Math.floor(Date.now()/1000)")
+        call = dict(p=0.30, ts=stamp - 900, src="meta")
+        stock = dict(p=25, ts=stamp, src="meta", sess="regular")
+        queries = []
+
+        def market(route):
+            queries.append(parse_qs(urlsplit(route.request.url).query)["syms"][0].split(","))
+            route.fulfill(json=dict(ok=True, q={ticker: call, "DEMO": stock}))
+
+        p.route("**/gas?action=quotes&**", market)
+        p.reload()
+        p.clock.fast_forward(2100)
+        row = p.locator(".opt-row").filter(has_text="Call")
+        expect(row).to_contain_text("US$0.3")
+        call.update(p=0.20, ts=stamp-840)
+        stock.update(p=26, ts=stamp+60)
+        p.clock.fast_forward(61000)
+        expect(row).to_contain_text("US$0.2")
+        self.assertEqual(p.evaluate("gp('DEMO')"), 26)
+        expect(p.locator(".opt-row").filter(has_text="Put")).to_contain_text("依你的成交價估算")
+        self.assertGreaterEqual(sum({ticker,"TSLL261127P00010000","DEMO"} <= set(q) for q in queries), 2)
+
+    def test_option_contract_filter_and_night_requests(self):
+        result = self.page.evaluate("""async () => {
+          const now=Date.parse('2026-11-20T01:00:00+08:00'); // Still Nov 19 in New York.
+          const base='OPT:TSLL:2026-11-19:C:10:100',put='OPT:TSLL:2026-11-27:P:10.125:100';
+          const keys=[base,put,'OPT:TSLL:2026-11-18:C:10:100','OPT:TSLL:2026-11-19:C:10:10',
+            'OPT:TSLL:2026-11-19:C:10.0004:100','OPT:TSLL:2026-11-19:C:100000:100',
+            'OPT:BRK.B:2026-11-19:C:10:100','OPT:TSLL:2026-11-27:C:11:100'];
+          const book={groups:new Map(keys.map((s,i)=>[s,{s,contract:optionContract(s),qty:i===7?0:-1}]))};
+          const eligible=optionQuoteRequests(book,now,false,{}),calls=[];
+          batchQuotes=async (syms,night)=>{calls.push([syms,!!night]);return {}};
+          await portfolioQuotes(['TSLL'],eligible,true);
+          return [eligible.map(x=>x.ticker),calls,
+            optionQuoteRequests(book,now,true,{[base]:now-59000,[put]:now-61000}).map(x=>x.symbol),
+            optionQuoteSymbol(optionContract('OPT:TSLL1:2027-01-15:P:12.5:100'))];
+        }""")
+        symbols = ["TSLL261119C00010000", "TSLL261127P00010125"]
+        self.assertEqual(result, [symbols, [[["TSLL"], True], [symbols, False]],
+                                  ["OPT:TSLL:2026-11-27:P:10.125:100"], "TSLL1270115P00012500"])
+
+    def test_option_market_time_wins_over_download_order(self):
+        result = self.page.evaluate("""async () => {
+          const s='OPT:TSLL:2026-11-27:C:10:100',ticker='TSLL261127C00010000';
+          const t=Math.floor(Date.now()/1000);
+          const open={id:'o',symbol:s,type:'option',cur:'USD',action:'sell',effect:'open',
+            date:'2026-11-17',qty:1,price:0.41};
+          S.tr=[open,...S.tr];const items=[{symbol:s,ticker}];
+          const check=q=>{let np={...S.pr};const count=applyOptionQuotes(items,{[ticker]:q},np);
+            S.pr=np;return [count,S.pr[s]?.p??null]};
+          const good={p:0.31,ts:t-1200,src:'meta'};
+          const rejected=[{...good,p:0},{...good,ts:t+1},{...good,src:'y-night'},
+            {...good,ts:null},{...good,ts:1}].map(check);
+          const first=check(good);
+          let resume;batchQuotes=async()=>({[ticker]:{...good,p:0.22,ts:t-900}});
+          fetchRate=async()=>{};fetchOne=()=>new Promise(resolve=>{resume=resolve});
+          fetchPrices(false);
+          for(let i=0;!resume&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));
+          if(!resume)throw Error('Stock fallback did not start');
+          S.pr[s]={p:0.28,src:'option-manual',at:t*1000};resume({p:23,t});
+          for(let i=0;S.pBusy&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));
+          if(S.pBusy)throw Error('Quote refresh did not finish');
+          const after=[S.pr[s].p,S.pr[s].src,S.pr.DEMO.p,S.optionQuoteStatus[s]];
+          S.tr.push({...open,id:'c',action:'buy',effect:'close',date:'2026-11-18'});
+          const closed=check(good);
+          return [rejected,first,after,closed];
+        }""")
+        self.assertEqual(result, [[[0, None]] * 5, [1, 0.31], [0.28, "option-manual", 23, "older"], [0, 0.28]])
 
     def test_option_fifo_contract_identity_fees_and_expiry(self):
         p = self.page

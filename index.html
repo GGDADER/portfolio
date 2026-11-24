@@ -194,7 +194,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v10.4";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v10.5";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v13";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -299,6 +299,7 @@ function nowHM(){var d=new Date();return("0"+d.getHours()).slice(-2)+":"+("0"+d.
 var S={
   tr:ld(TK,[]),pr:ld(PK,{}),v:"home",ed:null,det:null,toast:null,tt:null,del:null,
   pv:"",pLoading:false,lastUp:null,lastFail:null,pBusy:false,_lastTry:0,_pt:null,pGen:0,pStart:0,_pw:null,cur:ld(CK,"USD"),modal:null,rate:ld("pt_rate",32.5),jpyRate:ld("pt_usdjpy",null),
+  optionQuoteStatus:{},
   hide:ld("pt_hide",false),synced:false,syncing:false,
   chartRange:"1M",chartCustom:null,chartView:ld("pt_cv","mv"),
   hiddenSyms:ld("pt_hidden",[]),
@@ -714,6 +715,12 @@ function optionContract(symbol){
   if(String(+m[4])!==m[4]||String(+m[5])!==m[5])return null;
   return {root:m[1],expiry:m[2],right:m[3],strike:+m[4],mult:+m[5]};
 }
+function optionQuoteSymbol(c){
+  if(c.mult!==100||!/^20/.test(c.expiry)||!/^[A-Z][A-Z0-9]{0,5}$/.test(c.root))return "";
+  var strike=Math.round(c.strike*1000);
+  if(strike<1||strike>99999999||strike/1000!==c.strike)return "";
+  return c.root+c.expiry.slice(2).replace(/-/g,"")+c.right+String(strike).padStart(8,"0");
+}
 function symbolLabel(s){
   var c=optionContract(s);
   return c?c.root+" "+c.expiry+" "+(c.right==="C"?"Call":"Put")+" $"+c.strike+(c.mult===100?"":" ×"+c.mult):s;
@@ -777,8 +784,10 @@ function optionBook(trades,prices){
   groups.forEach(function(g){
     if(!g.last)return;
     var q=prices[g.s];
-    g.manual=!!(q&&q.src==="option-manual"&&Number.isFinite(q.p)&&q.p>=0&&q.at>=tsOf(g.last));
-    g.mark=g.manual?q.p:+g.last.price;
+    var usable=q&&Number.isFinite(q.p)&&Number.isFinite(q.at)&&q.at>=tsOf(g.last)&&
+      ((q.src==="option-manual"&&q.p>=0)||(q.src==="option-yahoo"&&q.p>0&&q.at===q.qt*1000&&q.at<=Date.now()));
+    g.quote=usable?q:null;
+    g.mark=g.quote?g.quote.p:+g.last.price;
     g.basis=g.lots.reduce(function(v,lot){return v+lot.left*lot.basis},0);
     g.value=g.qty*g.mark*g.contract.mult;g.unrealized=g.value-g.basis;
     value+=g.value;basis+=g.basis;cash+=g.cash;
@@ -930,7 +939,7 @@ function fetchYtdBaseline(sym,cur){
    `at` is when we last talked to the server; `qt` is the timestamp the source put on the
    quote itself. Only `qt` says whether the number on screen is actually current, so that
    is what the status bar reports now. */
-function quoteAge(){var best=0;for(var k in S.pr){var d=S.pr[k];if(!d||d.src==="option-manual")continue;var t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}return best?Math.round((Date.now()-best)/1000):null}
+function quoteAge(){var best=0;for(var k in S.pr){var d=S.pr[k];if(!d||k.startsWith("OPT:"))continue;var t=d.qt?d.qt*1000:d.at;if(t&&t>best)best=t}return best?Math.round((Date.now()-best)/1000):null}
 function ageLabel(sec){if(sec==null)return"";if(sec<90)return"\u5373\u6642";if(sec<3600)return Math.round(sec/60)+" \u5206\u9418\u524d";return Math.floor(sec/3600)+" \u5c0f\u6642\u524d"}
 /* Yahoo's extended window runs 04:00-20:00 ET. Derived from the browser's own UTC offset
    so it stays correct through DST without a timezone library; an hour of slop at the
@@ -981,25 +990,74 @@ function liveQuoteAge(pf){var now=Date.now(),us=usMarketLive()||overnightStart(n
   return need?(best?Math.round((now-best)/1000):1e9):null}
 function pollDelay(){return usMarketLive()||overnightStart(Date.now())||jpSession(Date.now())||twMarketLive()?POLL_LIVE_MS:POLL_IDLE_MS}
 
+function easternClock(ms){return new Date(ms+etOffset(ms)*3600000)}
+function optionQuoteRequests(book,now,silent,attempts){
+  var out=[];
+  if(!GS||(silent&&gasCooling()))return out;
+  var et=easternClock(now),today=et.toISOString().slice(0,10);
+  var minutes=et.getUTCHours()*60+et.getUTCMinutes(),day=et.getUTCDay();
+  // Leave time after the close for the delayed final trade to arrive.
+  var trading=day>0&&day<6&&minutes>=570&&minutes<1000;
+  var interval=trading?POLL_LIVE_MS:3600000;
+  book.groups.forEach(function(g){
+    if(!g.qty||g.contract.expiry<today||(silent&&now-(attempts[g.s]||0)<interval))return;
+    var ticker=optionQuoteSymbol(g.contract);
+    if(ticker)out.push({symbol:g.s,ticker:ticker});
+  });
+  return out;
+}
+function portfolioQuotes(stocks,options,night){
+  if(!options.length)return batchQuotes(stocks,night);
+  var symbols=options.map(function(item){return item.ticker}),jobs=[];
+  if(night&&stocks.length)jobs.push(batchQuotes(stocks,true));
+  else symbols=stocks.concat(symbols);
+  // Keep even the longest contract symbols within Apps Script's URL length limit.
+  for(var i=0;i<symbols.length;i+=40)jobs.push(batchQuotes(symbols.slice(i,i+40),false));
+  return Promise.all(jobs).then(function(parts){return Object.assign({},...parts)});
+}
+function applyOptionQuotes(requests,quotes,prices){
+  if(!requests.length)return 0;
+  var groups=optionBook(S.tr,S.pr).groups,found=0,now=Date.now();
+  requests.forEach(function(item){
+    var g=groups.get(item.symbol),q=quotes[item.ticker];
+    if(!g||!g.qty)return;
+    if(!q||(q.src!=="meta"&&q.src!=="bar")||!Number.isFinite(q.p)||q.p<=0||
+       !Number.isSafeInteger(q.ts)||q.ts<=0||q.ts*1000>now){
+      S.optionQuoteStatus[g.s]="missing";return;
+    }
+    // v13 merges price records by 'at'. Use the market timestamp on every device.
+    var stamp=q.ts*1000;
+    if(stamp<tsOf(g.last)||(g.quote&&(stamp<g.quote.at||
+       (stamp===g.quote.at&&g.quote.src==="option-manual")))){
+      S.optionQuoteStatus[g.s]="older";return;
+    }
+    if(!g.quote||stamp>g.quote.at)prices[g.s]={p:q.p,src:"option-yahoo",qt:q.ts,at:stamp};
+    S.optionQuoteStatus[g.s]="ok";found++;
+  });
+  return found;
+}
 function fetchPrices(silent){
-  var pf=calc();if(!pf.op.length){
+  var pf=calc(),now=Date.now(),att=S._att||(S._att={});
+  var optionRequests=optionQuoteRequests(pf.options,now,silent,att);
+  if(!pf.op.length&&!optionRequests.length){
     if(pf.options.groups.size)snapHistory();
     if((pf.options.groups.size||S.tr.some(function(t){return t.cur==="JPY"}))&&Date.now()-(S._fxTry||0)>300000){
       S._fxTry=Date.now();fetchRate().then(function(){snapHistory();render(true)});
-    }return;
+    }
+    if(!silent&&pf.options.groups.size)toast("目前沒有可自動查價的未到期合約");
+    return;
   }
-  var now=Date.now();
   if(S.pBusy){
     /* Only an automatic poll defers, and only while the running refresh still looks
        alive. A manual tap falls through and takes over. */
     if(silent&&(now-(S.pStart||0))<REFRESH_TIMEOUT_MS+2000)return;
-  }else if(silent&&now-S._lastTry<15000)return;
+  }else if(silent&&!optionRequests.length&&now-S._lastTry<15000)return;
   /* Automatic polls only ask for what can have changed: TW quotes while TWSE is open (plus
      one pass after the close), US quotes while the 04:00-20:00 ET window is open (plus one
      pass after it ends), and nothing from GAS while it is cooling down. A tap on 🔄 still
      refreshes everything. */
   var night=overnightStart(now);
-  var skip={},cool=silent&&gasCooling(),att=S._att||(S._att={}),liveAtt=false;
+  var skip={},cool=silent&&gasCooling(),liveAtt=false;
   if(silent){
     /* A market that has closed is fetched once more to pick up its final price, then left
        alone. If that pass fails, or a symbol cannot be priced at all, it is retried hourly
@@ -1017,12 +1075,12 @@ function fetchPrices(silent){
     for(i0=0;i0<pf.op.length;i0++){s0=pf.op[i0].s;if(!isJP(s0)&&!isTW(s0)&&!usNeed)skip[s0]=1;if(!skip[s0]){any=true;if(isJP(s0)?jpSession(now):isTW(s0)?twLive:(usLive||night))liveAtt=true}}
     /* Nothing can have changed. Still record today's snapshot and fill any missing YTD
        baseline, and a failure from earlier no longer applies to prices that are final. */
-    if(!any&&(S.jpyRate||!pf.op.some(function(x){return x.cur==="JPY"}))){S._lastTry=now;if(!S.lastUp||(S.lastFail&&S.lastFail>S.lastUp))S.lastUp=new Date();snapHistory();fetchYtdQueue(pf);return}
+    if(!any&&!optionRequests.length&&(S.jpyRate||!pf.op.some(function(x){return x.cur==="JPY"}))){S._lastTry=now;if(!S.lastUp||(S.lastFail&&S.lastFail>S.lastUp))S.lastUp=new Date();snapHistory();fetchYtdQueue(pf);return}
   }
   var gen=++S.pGen;
   S.pBusy=true;S.pStart=now;S._lastTry=now;
   if(!silent){S.pLoading=true;render()}
-  function alive(){return gen===S.pGen}
+  function alive(){return gen===S.pGen&&S.pBusy}
 
   function finish(ok,stale,msg){
     if(!alive())return;
@@ -1030,7 +1088,7 @@ function fetchPrices(silent){
     S.pBusy=false;S.pLoading=false;
     if(ok){S.lastUp=new Date();S.lastFail=null}else if(!silent||liveAtt){S.lastFail=new Date()}
     sv(PK,S.pr);snapHistory();
-    if(!silent)toast(ok?("\u5df2\u66f4\u65b0 "+ok+" \u6a94\u5831\u50f9"+(stale?"\uff08"+stale+" \u6a94\u70ba\u5ef6\u9072\u5831\u50f9\uff09":" \u2713")):(msg||"\u66f4\u65b0\u5931\u6557\uff1a\u5831\u50f9\u4f86\u6e90\u6c92\u6709\u56de\u61c9"));
+    if(!silent)toast(msg||(ok?("已查詢 "+ok+" 檔報價"+(stale?"（"+stale+" 檔為延遲報價）":" ✓")):"更新失敗：報價來源沒有回應"));
     render(true);
     fetchYtdQueue(pf);
   }
@@ -1040,11 +1098,14 @@ function fetchPrices(silent){
 
   var usSyms=[];for(var ui=0;ui<pf.op.length;ui++){if(!isTW(pf.op[ui].s)&&!skip[pf.op[ui].s])usSyms.push(pf.op[ui].s)}
   if(!cool)for(ui=0;ui<usSyms.length;ui++)att[usSyms[ui]]=now;
+  optionRequests.forEach(function(item){att[item.symbol]=now});
   function nowSec(){return Math.floor(Date.now()/1000)}
 
   /* Rate and quotes are independent, so they run together instead of one after the other.
      Neither ever rejects (both swallow their own errors), so Promise.all can't short out. */
-  Promise.all([fetchRate(),cool?Promise.resolve({}):batchQuotes(usSyms,night)]).then(function(res){
+  var rateDue=pf.op.length||now-(S._fxTry||0)>300000;
+  if(rateDue)S._fxTry=now;
+  Promise.all([rateDue?fetchRate():null,cool?{}:portfolioQuotes(usSyms,optionRequests,night)]).then(function(res){
     if(!alive())return null;
     var bq=res[1]||{},np={};for(var k in S.pr)np[k]=S.pr[k];
     var miss=[],ok=0,stale=0;
@@ -1086,8 +1147,11 @@ function fetchPrices(silent){
       }))})(miss[m])}
     return Promise.all(jobs).then(function(){
       if(!alive())return;
-      Object.keys(S.pr).forEach(function(k){if(S.pr[k].src==="option-manual")np[k]=S.pr[k]});
-      S.pr=np;finish(ok,stale)})
+      Object.keys(S.pr).forEach(function(k){if(k.startsWith("OPT:"))np[k]=S.pr[k]});
+      var optionCount=applyOptionQuotes(optionRequests,bq,np);
+      S.pr=np;
+      finish(ok+optionCount,stale,!pf.op.length&&optionRequests.length?
+        (optionCount?"已查詢期權行情，請看市場時間":"尚無更新的市場成交，沿用目前估值"):null)})
   }).catch(function(e){finish(0,0,"\u66f4\u65b0\u5931\u6557\uff1a"+((e&&e.message)||"\u672a\u77e5\u932f\u8aa4"))})
 }
 
@@ -1271,24 +1335,39 @@ function submitOption(form){
   if(error){alert(error+"。請核對開平倉動作、合約與成交時間。");return}
   if(!storeTrades(next))return;
   S.of=null;S.v="trades";snapHistory();scheduleSync();toast("期權交易已儲存");
+  if(t.effect==="open")setTimeout(function(){fetchPrices(true)},500);
 }
 function saveOptionMark(form){
   var p=Number(form.elements.mark.value),g=optionBook(S.tr,S.pr).groups.get(S.det);
   if(!g||!g.qty||form.elements.mark.value===""||!Number.isFinite(p)||p<0)return;
   var next=Object.assign({},S.pr);next[g.s]={p:p,at:Date.now(),src:"option-manual"};
   if(!sv(PK,next)){alert("本機無法儲存期權報價。");return}
-  S.pr=next;snapHistory();scheduleSync();toast("已更新這口合約的權利金");
+  S.pr=next;delete S.optionQuoteStatus[g.s];snapHistory();scheduleSync();toast("已更新這口合約的權利金");
 }
 function optionMoney(v){return (v<0?"−":"")+"US$"+fm(Math.abs(v))}
+function optionPriceSource(g){
+  if(!g.quote)return "依你的成交價估算 · "+dtLabel(g.last);
+  var label=g.quote.src==="option-yahoo"?"Yahoo 市場成交（行情約延遲 15 分鐘）":"手動報價";
+  return label+" · "+new Date(g.quote.at).toLocaleString("zh-TW",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+}
 function optionDetail(g){
   var c=g.contract,short=g.qty<0;
   var h='<div class="hdr"><button class="hib" aria-label="返回總覽" onclick="set({v:\'home\',det:null})">‹</button><b>IBKR 期權持倉</b><button class="hib" onclick="toggleHide()">👁</button></div>';
   h+='<div class="scr"><div class="cnt"><div class="section-label">'+c.root+' · '+(c.right==="C"?"Call 買權":"Put 賣權")+'</div><div class="card">';
-  h+=sr("到期日",c.expiry)+sr("履約價","US$"+c.strike)+sr("每口乘數",c.mult)+sr(short?"賣方持倉":"買方持倉",H(Math.abs(g.qty)+" 口"));
-  h+=sr("累計淨收付（含費）",H(optionMoney(g.cash)))+sr("合約市值",H(optionMoney(g.value)))+sr("未實現損益",H(optionMoney(g.unrealized)))+sr("已實現損益",H(optionMoney(g.realized)));
-  h+='</div><form class="card" onsubmit="event.preventDefault();saveOptionMark(this)"><label class="opt-label">每股權利金現價（USD）<input class="inp" name="mark" required type="number" inputmode="decimal" min="0" step="any" placeholder="'+g.mark+'"></label>';
-  var stamp=g.manual?new Date(S.pr[g.s].at).toLocaleString("zh-TW"):dtLabel(g.last);
-  h+='<p class="opt-note">'+(g.manual?"手動報價":"依最近一筆期權成交估值")+' · '+stamp+' · '+H("US$"+g.mark)+'</p><button class="bs">儲存權利金現價</button></form>';
+  h+=sr("到期日",c.expiry)+sr("履約價","US$"+c.strike)+sr("每股權利金估值",H("US$"+g.mark))+'<p class="opt-note">'+esc(optionPriceSource(g))+'</p>';
+  var eligible=!!optionQuoteSymbol(c),expired=c.expiry<easternClock(Date.now()).toISOString().slice(0,10);
+  var status=S.optionQuoteStatus[g.s],note;
+  if(expired)note="合約已到期，請依 IBKR 紀錄確認結果。";
+  else if(!eligible)note="此合約的代號、履約價或乘數無法對應行情，請手動輸入權利金。";
+  else if(status==="missing")note="行情來源暫無這張合約的成交資料，沿用上方估值。";
+  else if(status==="older")note="市場資料早於或等於你已有的價格時間，沿用上方估值。";
+  else note="開著 App 時會自動查價。市場有更新的成交時，損益會跟著重算。";
+  h+='<p class="opt-note">'+note+'</p>';
+  if(eligible&&!expired)h+='<button class="bs" type="button" onclick="fetchPrices(false)"'+(S.pLoading?' disabled':'')+'>'+(S.pLoading?'查詢中…':'更新期權報價')+'</button>';
+  h+='</div><div class="card">'+sr(short?"賣方持倉":"買方持倉",H(Math.abs(g.qty)+" 口"))+sr("每口乘數",c.mult);
+  h+=sr("未實現損益",H(optionMoney(g.unrealized)))+sr("已實現損益",H(optionMoney(g.realized)))+sr("合約市值",H(optionMoney(g.value)))+sr("累計淨收付（含費）",H(optionMoney(g.cash)));
+  h+='</div><form class="card" onsubmit="event.preventDefault();saveOptionMark(this)"><label class="opt-label">手動輸入每股權利金（USD）<input class="inp" name="mark" required type="number" inputmode="decimal" min="0" step="any" placeholder="'+(S.hide?'':g.mark)+'"></label>';
+  h+='<button class="bs">儲存權利金現價</button></form>';
   h+='<div class="opt-buttons"><button class="bp" onclick="openOptionForm(S.det,\''+(short?"BTC":"STC")+'\')">'+(short?"買回平倉":"賣出平倉")+'</button>';
   if(c.expiry<=localDate())h+='<button class="bs" onclick="openOptionForm(S.det,\''+(short?"XS":"XL")+'\')">登記到期歸零</button>';
   h+='</div><p class="opt-note">如遇履約或被指派，請核對 IBKR 的股票交割明細。本頁可登記買賣平倉或無價值到期。</p></div></div>';
@@ -1300,7 +1379,8 @@ function optionHoldings(book){
   book.groups.forEach(function(g){
     if(!g.qty)return;
     h+='<button class="card opt-row" onclick="set({v:\'optionDetail\',det:\''+g.s+'\'})"><b>'+esc(symbolLabel(g.s))+'</b>';
-    h+='<div class="opt-note">'+(g.qty<0?"賣方":"買方")+' · '+H(Math.abs(g.qty)+" 口")+' · '+(g.manual?"手動報價":"成交估值")+' '+H("US$"+g.mark)+'</div>';
+    h+='<div class="opt-note">'+(g.qty<0?"賣方":"買方")+' · '+H(Math.abs(g.qty)+" 口")+' · 每股 '+H("US$"+g.mark)+'</div>';
+    h+='<div class="opt-note">'+esc(optionPriceSource(g))+'</div>';
     h+='未實現 '+H(optionMoney(g.unrealized))+'</button>';
   });
   h+='<p class="opt-note">期權累計淨收付 '+H(optionMoney(book.cash))+'（含費）。持倉淨值計入合約市值，現金另列。</p>';
@@ -2290,10 +2370,13 @@ function render(passive){try{
      failure state. The old line printed "更新於 剛剛" even when every fetch had come back
      empty, which is why a broken feed looked identical to a working one. */
   if(S.pLoading)h+='<span class="dot"></span>更新中...';
+  else if(!pf.op.length&&pf.options.groups.size){
+    if(Array.from(pf.options.groups.values()).some(function(g){return g.qty}))h+='<span>期權行情約延遲 15 分鐘</span>';
+  }
   else if(S.lastFail&&(!S.lastUp||S.lastFail>S.lastUp))h+='<span class="dot" style="background:var(--down);box-shadow:0 0 6px var(--down)"></span><span style="color:var(--down);font-weight:700">報價更新失敗</span>';
   else if(S.lastUp){var qAge=quoteAge(),lqa=liveQuoteAge(pf),qWarn=(lqa!=null&&lqa>420);
     h+='<span class="dot"'+(qWarn?' style="background:var(--amber);box-shadow:0 0 6px var(--amber)"':'')+'></span>'+(qWarn?'<span style="cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">':'<span>')+'報價 '+(lqa!=null?(lqa>=1e9?"—":ageLabel(lqa)):qAge!=null?ageLabel(qAge):timeAgo(S.lastUp))+(qWarn?' \u26a0 ›':'')+'</span>';}
-  var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!sv2||!sv2.at)continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
+  var curSess="",bestAt=0;for(var sk in S.pr){var sv2=S.pr[sk];if(!pf.op.length||!sv2||!sv2.at||sk.startsWith("OPT:"))continue;if(sv2.at>bestAt){bestAt=sv2.at;curSess=liveSess(sv2)}}
   if(curSess){var scol=curSess==="regular"?"var(--up)":curSess==="pre"?"var(--blue)":curSess==="post"?"var(--purple)":"var(--amber)";
     h+=' · <span style="color:'+scol+';font-weight:700">'+sessName(curSess)+'</span>'}
   if(!S.syncErr&&cfgOk()&&latStats().slow)h+=' · <span style="color:var(--amber);cursor:pointer" onclick="S.menu=false;set({v:\'health\'})">☁ GAS 變慢 ›</span>';
@@ -2616,7 +2699,8 @@ function fitViewport(){try{
 function onWake(){
   if(document.hidden){if(S._syT&&cfgOk()){clearTimeout(S._syT);S._syT=null;syncNow({silent:true})}return}
   backupToday();resetPageScroll();fitViewport();
-  var a=quoteAge();if(a==null||a>45)fetchPrices(true);schedulePoll();maybeSync();checkUpdate(false)}
+  var a=quoteAge();if(a==null||a>45||optionQuoteRequests(calc().options,Date.now(),true,S._att||{}).length)fetchPrices(true);
+  schedulePoll();maybeSync();checkUpdate(false)}
 document.addEventListener("visibilitychange",onWake);
 window.addEventListener("online",function(){S._lastTry=0;fetchPrices(true);if(cfgOk()&&!S.syncing&&(S.syncErr||S._syRT))syncNow({silent:true});else maybeSync()});
 window.addEventListener("focus",onWake);
