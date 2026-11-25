@@ -242,9 +242,10 @@ class PortfolioTests(unittest.TestCase):
 
     def test_legacy_fee_and_stock_field_swap(self):
         p = self.page
-        p.evaluate("""const t={...findTr('lot1'),id:'legacy',date:localDate(),tm:'00:10',
+        p.wait_for_function("S.synced && !S.syncing && !S.pBusy && !S._syT")
+        p.evaluate("""const t={...findTr('lot1'),symbol:'SWAPTEST',id:'legacy',date:localDate(),tm:'00:10',
             price:800,qty:12.3,fr:0.00496,feeEstimateRate:0.00496,fee:.48};
-            storeTrades(S.tr.concat(t));S.ed={...t};S.pr.DEMO={p:12.32,at:Date.now()};
+            storeTrades(S.tr.concat(t));S.ed={...t};S.pr.SWAPTEST={p:12.32,at:Date.now()};sv(PK,S.pr);
             initF(S.ed);set({v:'form'})""")
         expect(p.locator("#f_fe")).to_have_value("0.48")
         expect(p.locator("#fFeeNote")).to_contain_text("平均")
@@ -472,11 +473,14 @@ class PortfolioTests(unittest.TestCase):
 
     def test_option_only_auto_quote_on_open_and_manual_refresh(self):
         p = self.page
-        key = "OPT:TSLL:2026-11-27:C:10:100"
-        ticker = "TSLL261127C00010000"
+        key = "OPT:FTEST:2026-11-27:C:18:100"
+        ticker = "FTEST261127C00018000"
         trade = dict(id="short", symbol=key, type="option", cur="USD", broker="IBKR",
-                     effect="open", action="sell", date="2026-11-17", price=0.41, qty=15)
-        p.evaluate("row=>{storeTrades([row]);S.pr={};sv(PK,S.pr)}", trade)
+                     effect="open", action="sell", date="2026-11-17", price=0.75, qty=4)
+        # Seed the new document before its first refresh. A response from the
+        # previous document must never be part of this option-only fixture.
+        p.wait_for_function("S.synced && !S.syncing && !S.pBusy && !S._syT")
+        p.add_init_script("localStorage.setItem('pt_t9',JSON.stringify(%s));localStorage.setItem('pt_p9','{}')" % json.dumps([trade]))
         quote_time = p.evaluate("Math.floor(Date.now()/1000)-960")
         quotes = {ticker: dict(p=0.31, ts=quote_time, src="meta", sess="regular")}
         queries = []
@@ -495,8 +499,8 @@ class PortfolioTests(unittest.TestCase):
         self.assertTrue(queries)
         self.assertTrue(all(q["syms"] == [ticker] and "night" not in q for q in queries))
         self.assertEqual(p.evaluate("s=>S.pr[s].at", key), quote_time * 1000)
-        self.assertAlmostEqual(p.evaluate("calc().options.value"), -465)
-        self.assertAlmostEqual(p.evaluate("calc().options.unrealized"), 150)
+        self.assertAlmostEqual(p.evaluate("calc().options.value"), -124)
+        self.assertAlmostEqual(p.evaluate("calc().options.unrealized"), 176)
         row.click()
         expect(p.locator("#app")).to_contain_text("11/20")
         if os.getenv("SCREENSHOT_DIR"):
@@ -518,8 +522,8 @@ class PortfolioTests(unittest.TestCase):
         p.clock.set_fixed_time("2026-11-20T02:00:00+08:00")
         quotes[ticker] = dict(p=0.21, ts=p.evaluate("Math.floor(Date.now()/1000)-901"), src="meta")
         update.click()
-        p.wait_for_function("!S.pBusy && calc().options.value===-315")
-        self.assertEqual(p.evaluate("calc().options.unrealized"), 300)
+        p.wait_for_function("!S.pBusy && calc().options.value===-84")
+        self.assertAlmostEqual(p.evaluate("calc().options.unrealized"), 216)
         self.assertEqual(p.evaluate("calc().options.groups.values().next().value.realized"), 0)
 
     def test_option_poll_updates_again_without_a_tap(self):
