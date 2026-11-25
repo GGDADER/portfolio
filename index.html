@@ -194,7 +194,7 @@ html,body{font-family:-apple-system,'SF Pro Display','Noto Sans TC',system-ui,sa
 /* ============================================================
    ===============  設定區（要改參數改這裡）  ==================
    ============================================================ */
-var APP_VER="v10.6";        /* 本檔版本，改動時請一併更新 */
+var APP_VER="v10.7";        /* 本檔版本，改動時請一併更新 */
 var GAS_VER="v13";         /* 需搭配的 Apps Script 版本（?action=ping 可驗證）*/
 
 /* 網路逾時與輪詢間隔（毫秒）。任何一次「更新報價」都不會超過 REFRESH_TIMEOUT_MS，
@@ -213,9 +213,10 @@ var POLL_IDLE_MS=300000;       /* 收盤自動更新間隔 */
 /* Effective percentages from the year ending 2026-11-25. The option
    denominator is total traded premium. Each market has its own estimate. */
 var IBKR_AVG={USD:0.00496,JPY:0.05302,option:1.58661,usdJpyFx:0.54216};
+var IBKR_TIERED="ibkr-us-tiered-2026-11";
+var OPTION_ORF={AMEX:.005,BATS:.00476,BOX:.022,CBOE:.01248,CBOE2:.01417,EDGX:.00286,EMERALD:.022,GEMINI:.011,IEX:0,ISE:.007,MEMX:.02,MERCURY:.011,MIAX:.017,MX2:.02,NASDAQBX:.024,NASDAQOM:.02,PEARL:.024,PHLX:.009,PSE:.008,SAPPHIRE:.022};
 var FEE_PRESETS=[
   {n:"0%",            r:0},
-  {n:"IBKR 年均 "+IBKR_AVG.USD+"%", r:IBKR_AVG.USD, cur:"USD"},
   {n:"IBKR 年均 "+IBKR_AVG.JPY+"%", r:IBKR_AVG.JPY, cur:"JPY"},
   {n:"複委託 0.08%",   r:0.08,   cur:"USD"},
   {n:"台股買 0.1425%", r:0.1425, cur:"TWD", act:"buy"},
@@ -256,6 +257,11 @@ function ytdKey(){return"pt_ytd_"+(new Date().getFullYear())}
 function feeScope(cur,type){return (type==="crypto"?"crypto":"stock")+":"+cur}
 function defFee(cur,type){
   var d=ld("pt_feed",{}),key=feeScope(cur,type),saved=d[key];
+  if(cur==="USD"&&type!=="crypto"){
+    var rate=saved!=null?saved:d.USD;
+    if(rate==null||rate===IBKR_TIERED||+rate===IBKR_AVG.USD||+rate===0.0035)return IBKR_TIERED;
+    return Number.isFinite(+rate)&&+rate>=0?+rate:IBKR_TIERED;
+  }
   if(saved!=null&&Number.isFinite(+saved)&&+saved>=0)return +saved;
   if(type==="crypto")return 0;
   var old=+d[cur];
@@ -268,6 +274,28 @@ function estimatedFee(gross,rate,scale){
   return Number.isFinite(amount)&&amount>0?Math.round((amount+Number.EPSILON)*scale)/scale:0;
 }
 function savedFeeEstimate(t){var r=Number(t&&t.feeEstimateRate);return Number.isFinite(r)&&r>0?r:0}
+/* IBKR Pro SmartRouting, first monthly volume band. The November schedule
+   includes the TAF holiday through Dec 31. Outside that window quote the
+   broker commission alone until that period's third-party fees are verified. */
+function hasUsFeeSchedule(date){return date>="2026-11-01"&&date<="2026-12-31"}
+function ibkrOrderFee(type,action,price,qty,mult,date,venue){
+  price=Number(price);qty=Number(qty);mult=Number(mult);
+  if(!(price>0&&qty>0&&mult>0)||!Number.isFinite(price*qty*mult))return 0;
+  var fees=0,known=hasUsFeeSchedule(date),gross=price*qty*mult,base;
+  if(type==="option"){
+    if(!Number.isSafeInteger(qty))return 0;
+    base=Math.max(1,qty*(price<.05?.25:price<.10?.50:.65));
+    if(known)fees=qty*(.025+.0003+(Object.hasOwn(OPTION_ORF,venue)?OPTION_ORF[venue]:0));
+  }else if(qty<1){
+    base=Math.max(.01,.01*gross);known=false;
+  }else{
+    qty=Math.floor(qty);gross=price*qty;
+    base=Math.min(.01*gross,Math.max(.35,.0035*qty));
+    if(known)fees=Math.min(.00020*qty,.005*gross)+.000003*qty+base*(.000175+.00056);
+  }
+  if(known&&action==="sell")fees+=gross*.0000206;
+  return Math.round((base+fees+Number.EPSILON)*100)/100;
+}
 
 function ld(k,f){try{return JSON.parse(localStorage.getItem(k))||f}catch(e){return f}}
 function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
@@ -1245,7 +1273,7 @@ function getChartData(range,cf,ct){
   return picked.filter(function(h){return new Date(h.d)>=from})
 }
 
-var F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:localDate(),cur:"USD",lots:[],fd:"cash",fr:defFee("USD"),fee:0,feeMode:"default"};
+var F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:localDate(),cur:"USD",lots:[],fd:"cash",fr:0,fee:0,feeMode:"default"};
 var optionModes={
   STO:["sell","open","賣出開倉 (STO)"],BTC:["buy","close","買回平倉 (BTC)"],
   BTO:["buy","open","買入開倉 (BTO)"],STC:["sell","close","賣出平倉 (STC)"],
@@ -1261,7 +1289,8 @@ function openOptionForm(symbol,mode,id){
   S.of={id:t?t.id:null,mode:mode,root:c?c.root:"",right:c?c.right:"C",expiry:c?c.expiry:"",
     strike:c?c.strike:"",mult:c?c.mult:100,qty:t?t.qty:(g&&mode!=="STO"&&mode!=="BTO"?Math.abs(g.qty):1),
     price:t?t.price:"",fee:t?(+t.fee||0):(optionModes[mode][1]==="expire"?0:""),
-    feeRate:t?savedFeeEstimate(t):IBKR_AVG.option,date:t?t.date:(c&&optionModes[mode][1]==="expire"?c.expiry:localDate()),
+    feeRate:t?savedFeeEstimate(t):0,feeModel:t?t.feeModel:IBKR_TIERED,feeActual:!!(t&&t.feeActual),venue:t?(t.feeVenue||""):"",
+    date:t?t.date:(c&&optionModes[mode][1]==="expire"?c.expiry:localDate()),
     tm:t?(t.tm||""):(optionModes[mode][1]==="expire"?"23:59":nowHM())};
   S.ed=null;set({v:"optionForm"});
 }
@@ -1280,28 +1309,39 @@ function optionPreview(d){
   return optionCashText(optionModes[d.mode][0],d.price,d.qty,d.mult,+d.fee||0);
 }
 function optionFeeNote(d){
-  if(!d.feeRate)return "採用這筆交易填寫的手續費。";
-  if(optionModes[d.mode][1]==="expire")return "到期歸零的預估手續費為 US$0，可依成交單填寫。";
-  return "預估手續費＝整筆權利金 × "+d.feeRate+"%（IBKR 年均）。可改填成交單的實付金額。";
+  if(optionModes[d.mode][1]==="expire")return "到期歸零預設 US$0，可依成交單填寫。";
+  if(d.feeModel===IBKR_TIERED){
+    var details=hasUsFeeSchedule(d.date)?"含結算費、稽核費及適用的賣出規費。"+(d.venue?"已計入所選交易所的監管費。":"選交易所可計入監管費。"):"此成交日期只估基本佣金。";
+    return "IBKR Pro 階梯式費率，每股權利金決定每口 US$0.25、0.50 或 0.65，每筆至少 US$1。"+details+"交易所另可能收費或回饋，可改填實付。";
+  }
+  if(d.feeRate)return "這筆沿用原先的年均預估 "+d.feeRate+"%。可改用按口估算或填寫實付。";
+  return "採用這筆交易填寫的手續費。";
 }
 function readOptionDraft(form,changed){
   var d=S.of,old=d.mode;
-  ["root","right","expiry","strike","mult","qty","price","fee","date","tm","mode"].forEach(function(k){d[k]=form.elements[k].value});
+  ["root","right","expiry","strike","mult","qty","price","fee","date","tm","mode","venue"].forEach(function(k){d[k]=form.elements[k].value});
   var expire=optionModes[d.mode][1]==="expire";
-  if(changed==="fee")d.feeRate=0;
-  if(expire!==(optionModes[old][1]==="expire"))d.feeRate=IBKR_AVG.option;
+  if(changed==="fee"){d.feeRate=0;d.feeModel=null;d.feeActual=true}
+  if(expire!==(optionModes[old][1]==="expire")){d.feeRate=0;d.feeModel=IBKR_TIERED;d.feeActual=false}
   if(expire){
     d.price=0;form.elements.price.value=0;
     if(d.expiry){d.date=d.expiry;form.elements.date.value=d.date}
     if(optionModes[old][1]!=="expire"){d.tm="23:59";form.elements.tm.value=d.tm}
   }else if(optionModes[old][1]==="expire"&&+d.price===0){d.price="";form.elements.price.value=""}
   form.elements.price.readOnly=expire;form.elements.date.readOnly=expire;
-  if(d.feeRate){
-    d.fee=(expire||(+d.price>0&&+d.qty>0&&+d.mult>0))?estimatedFee(d.price*d.qty*d.mult,d.feeRate,100):"";
+  if(d.feeModel===IBKR_TIERED||d.feeRate){
+    d.fee="";
+    if(expire)d.fee=0;
+    else if(+d.price>0&&+d.qty>0&&+d.mult>0){
+      var oldTrade=d.id&&findTr(d.id),gross=d.price*d.qty*d.mult;
+      if(d.feeModel===IBKR_TIERED)d.fee=ibkrOrderFee("option",optionModes[d.mode][0],d.price,d.qty,d.mult,d.date,d.venue);
+      else d.fee=oldTrade&&d.feeRate===savedFeeEstimate(oldTrade)&&gross===trGross(oldTrade)?trFee(oldTrade):estimatedFee(gross,d.feeRate,100);
+    }
     form.elements.fee.value=d.fee;
   }
   document.getElementById("opt_fee_note").textContent=optionFeeNote(d);
-  document.getElementById("opt_fee_reset").hidden=!!d.feeRate;
+  document.getElementById("opt_fee_reset").hidden=d.feeModel===IBKR_TIERED||expire;
+  document.getElementById("opt_venue_row").hidden=d.feeModel!==IBKR_TIERED||expire||!hasUsFeeSchedule(d.date);
   document.getElementById("opt_preview").textContent=optionPreview(d);
   document.getElementById("opt_expiry_note").hidden=!expire;
 }
@@ -1323,7 +1363,9 @@ function renderOptionForm(){
   h+=optionInput("date","成交日期","date",d.date,'required'+(expire?' readonly':''));
   h+=optionInput("tm","成交時間（選填）","time",d.tm);
   h+='</div><p class="opt-note" id="opt_fee_note">'+optionFeeNote(d)+'</p>';
-  h+='<button type="button" class="fchip" id="opt_fee_reset" onclick="S.of.feeRate=IBKR_AVG.option;readOptionDraft(this.form)"'+(d.feeRate?' hidden':'')+'>套用 IBKR 年均估算</button>';
+  h+='<label id="opt_venue_row"'+(d.feeModel!==IBKR_TIERED||expire||!hasUsFeeSchedule(d.date)?' hidden':'')+'>成交交易所（選填）<select class="inp" name="venue" id="opt_venue"><option value="">未知或多個交易所</option>';
+  Object.keys(OPTION_ORF).forEach(function(v){h+='<option'+(v===d.venue?' selected':'')+'>'+v+'</option>'});
+  h+='</select></label><button type="button" class="fchip" id="opt_fee_reset" onclick="S.of.feeModel=IBKR_TIERED;S.of.feeRate=0;readOptionDraft(this.form)"'+(d.feeModel===IBKR_TIERED||expire?' hidden':'')+'>套用 IBKR 按口估算</button>';
   h+='<p class="opt-note">整筆權利金＝每股權利金 × 口數 × 乘數。調整型合約請核對成交單上的代號與乘數。</p>';
   h+='<p class="opt-note" id="opt_expiry_note"'+(expire?'':' hidden')+'>請確認 IBKR 已列為無價值到期。履約或被指派涉及股票交割，請勿使用到期歸零。</p>';
   h+='<div class="sr" id="opt_preview" aria-live="polite">'+esc(optionPreview(d))+'</div><div class="opt-buttons"><button type="button" class="bs" onclick="set({v:\'trades\'})">取消</button><button class="bp" type="submit">儲存期權交易</button></div></form></div></div>';
@@ -1342,6 +1384,9 @@ function submitOption(form){
     action:mode[0],effect:mode[1],qty:+d.qty,price:+d.price,fee:+d.fee||0,date:d.date,tm:d.tm,
     u:Math.max(Date.now(),((old&&+old.u)||0)+1)};
   if(d.feeRate&&mode[1]!=="expire")t.feeEstimateRate=d.feeRate;
+  if(d.feeModel===IBKR_TIERED&&mode[1]!=="expire")t.feeModel=IBKR_TIERED;
+  if(d.feeActual&&d.feeModel!==IBKR_TIERED&&!d.feeRate)t.feeActual=true;
+  if(d.venue&&mode[1]!=="expire"&&Object.hasOwn(OPTION_ORF,d.venue))t.feeVenue=d.venue;
   if(old&&old.seq)t.seq=old.seq;
   else if(!old)t.seq=S.tr.reduce(function(seq,x){return x.type==="option"&&x.seq>=seq?x.seq+1:seq},Date.now());
   if(!validOption(t)||t.date>localDate()){
@@ -1415,9 +1460,11 @@ function optionClosedDetail(c){
 function initF(t){
   if(t){F={type:t.type||"stock",symbol:t.symbol||"",action:t.action||"buy",price:t.price||"",qty:t.qty||"",date:t.date||localDate(),tm:t.tm||"",cur:t.cur||"USD",id:t.id,lots:(t.lots&&t.lots.slice)?t.lots.slice():[],
     fd:(t.fd==="margin")?"margin":"cash",fr:savedFeeEstimate(t)||+t.fr||0,fee:trFee(t),feeMode:savedFeeEstimate(t)?"annual":"amount"};
-    if(!savedFeeEstimate(t)&&+t.fr>0)F.feeMode="stored-rate";
+    F.feeActual=!!t.feeActual;
+    if(t.feeModel===IBKR_TIERED)F.feeMode="tiered";
+    else if(!savedFeeEstimate(t)&&+t.fr>0)F.feeMode="stored-rate";
     if(F.feeMode==="amount")recalcFormFee()}
-  else{F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:localDate(),tm:nowHM(),cur:"USD",lots:[],fd:"cash",fr:defFee("USD"),fee:0,feeMode:"default"}}}
+  else{F={type:"stock",symbol:"",action:"buy",price:"",qty:"",date:localDate(),tm:nowHM(),cur:"USD",lots:[],fd:"cash",fr:0,fee:0,feeMode:"default"};recalcFormFee()}}
 function readF(){var map={f_s:"symbol",f_p:"price",f_q:"qty",f_d:"date",f_t:"tm"},ids=Object.keys(map);for(var i=0;i<ids.length;i++){var el=document.getElementById(ids[i]);if(el)F[map[ids[i]]]=ids[i]==="f_s"?el.value.toUpperCase():el.value}}
 function fGross(){var tw=F.cur==="TWD";return(+F.price||0)*(+F.qty||0)*(tw?1000:1)}
 function fFee(){var v=+F.fee;return(isFinite(v)&&v>0)?v:0}
@@ -1430,8 +1477,15 @@ function setFormMarket(cur){
   if(previous!==feeScope(cur,F.type)){F.feeMode="default";delete F.chosenRate}
 }
 function usesAnnualFee(){return F.feeMode==="annual"||((F.feeMode==="default"||F.feeMode==="rate")&&F.type!=="crypto"&&F.fr>0&&F.fr===IBKR_AVG[F.cur])}
+function usesTieredFee(){return F.feeMode==="tiered"||(F.feeMode==="default"&&defFee(F.cur,F.type)===IBKR_TIERED)}
 function formFeeNote(){
   if(F.feeMode==="amount")return "採用這筆交易填寫的金額。點選費率可重新估算。";
+  if(usesTieredFee()){
+    if(+F.qty>0&&+F.qty<1)return "不足一股按成交金額的 1% 估基本佣金，最低 US$0.01。其他費用請依成交單填寫。";
+    var note="IBKR Pro 階梯式，每股 US$0.0035，每筆至少 US$0.35，基本佣金上限為成交金額的 1%。";
+    if(+F.qty>1&&!Number.isInteger(+F.qty))note+="整股與零股混合時只估整股部分。";
+    return note+(hasUsFeeSchedule(F.date)?"含結算及適用規費，交易場所收費或回饋另計。":"此成交日期只估基本佣金。")+"可改填整筆實付。";
+  }
   if(usesAnnualFee())return "依截至 2026/11/25 的 IBKR 一年平均估算，可改填這筆成交單的實付金額。"+
     (F.cur==="JPY"?"美元與日圓的換匯費另計，年均 "+IBKR_AVG.usdJpyFx+"%。":"");
   return "可輸入費率或這筆的實付金額。儲存新交易時會記住你選的費率。";
@@ -1439,11 +1493,13 @@ function formFeeNote(){
 function recalcFormFee(){
   var gross=fGross();
   if(F.feeMode==="amount"){F.fr=gross>0?fFee()/gross*100:0;return}
+  if(usesTieredFee()){F.fr=0;F.fee=ibkrOrderFee("stock",F.action,F.price,F.qty,1,F.date);return}
   if(F.feeMode==="stored-rate"){
     F.fee=S.ed&&gross===trGross(S.ed)?trFee(S.ed):gross*F.fr/100;
     return;
   }
   if(F.feeMode==="default")F.fr=defFee(F.cur,F.type);
+  if(F.feeMode==="annual"&&S.ed&&gross===trGross(S.ed)){F.fee=trFee(S.ed);return}
   F.fee=estimatedFee(gross,F.fr,usesAnnualFee()?100:10000);
 }
 function feeRateText(){return F.fr?+Number(F.fr).toFixed(8):""}
@@ -1452,6 +1508,7 @@ function paintFeeFields(typing){
   recalcFormFee();
   var rate=document.getElementById("f_fr"),amount=document.getElementById("f_fe"),note=document.getElementById("fFeeNote");
   if(rate&&typing!=="rate")rate.value=feeRateText();
+  if(rate)rate.placeholder=usesTieredFee()?"按股估算":"0";
   if(amount&&typing!=="amount")amount.value=formFeeAmount();
   if(note)note.textContent=formFeeNote();
 }
@@ -1472,6 +1529,7 @@ function updTot(){
 }
 function changeFormFee(mode,value){
   readF();F.feeMode=mode;F[mode==="rate"?"fr":"fee"]=Math.max(0,+value||0);
+  F.feeActual=mode==="amount";
   // Taiwan's existing fee shortcut remembers the effective rate of a cash amount.
   if(mode==="amount"&&F.cur==="TWD"&&fGross()>0){F.fr=F.fee/fGross()*100;F.feeMode="rate"}
   if(F.feeMode==="rate")F.chosenRate=F.fr;
@@ -1479,8 +1537,9 @@ function changeFormFee(mode,value){
   var lb=document.getElementById("lotsBox");if(lb)lb.innerHTML=buildLotsHtml();
 }
 function setFeeRate(r){document.getElementById("f_fr").value=r;changeFormFee("rate",r)}
+function setStockTiered(){readF();F.feeMode="tiered";F.chosenRate=IBKR_TIERED;updTot()}
 function setFFd(v){readF();F.fd=v;render()}
-function setFAct(v){readF();F.action=v;render()}
+function setFAct(v){readF();F.action=v;recalcFormFee();render()}
 function setFCur(v){readF();if(v!=="JPY"&&isJP(F.symbol))F.symbol=F.symbol.slice(0,-2);
   setFormMarket(v);recalcFormFee();render()}
 function submitF(){readF();
@@ -1502,6 +1561,8 @@ function submitF(){readF();
   if(fr>0&&fee>0&&F.feeMode!=="amount")t.fr=fr;
   if(fee>0&&(F.feeMode!=="stored-rate"||(S.ed&&+S.ed.fee>0)))t.fee=fee;
   if(usesAnnualFee())t.feeEstimateRate=fr;
+  if(usesTieredFee())t.feeModel=IBKR_TIERED;
+  if(F.feeMode==="amount"&&F.feeActual)t.feeActual=true;
   if(F.action==="buy"&&F.fd==="margin")t.fd="margin";
   t.u=Math.max(Date.now(),(+((S.ed||{}).u)||0)+1);if(F.action==="sell"&&F.lots&&F.lots.length)t.lots=F.lots.slice();
   if(S.ed&&!findTr(t.id)){alert("這筆交易已被刪除，請返回交易清單。");return}
@@ -1620,10 +1681,19 @@ function fHintHtml(){
     else R='可賣 '+H(fmQ(have))+' '+un+(Math.abs(need-have)>QE?'<button class="flink" onclick="useAllQty()">全部</button>':'');
   }else if(have>QE)R='已持有 '+H(fmQ(have))+' '+un;
   if(!L&&!R)return'<div style="height:4px"></div>';
-  return'<div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.5"><div style="flex:1;min-width:0">'+L+'</div><div style="flex:1;min-width:0">'+R+'</div></div>'}
+  var hint='<div style="display:flex;gap:10px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.5"><div style="flex:1;min-width:0">'+L+'</div><div style="flex:1;min-width:0">'+R+'</div></div>';
+  var quote=S.pr[sym],recent=quote&&Math.abs(Date.now()-(+quote.at||0))<7*86400000;
+  if(F.cur==="USD"&&F.type==="stock"&&recent&&q>0&&F.qty>0&&F.price>0&&Math.abs(F.qty/q-1)<.12&&(F.price/q>5||F.price/q<.2)){
+    hint+='<div class="opt-note" style="color:var(--amber)">股數接近近期股價。請核對單價和股數是否填反。 <button type="button" class="fchip" onclick="swapStockFields()">交換單價和股數</button></div>';
+  }
+  return hint}
+function swapStockFields(){
+  var price=document.getElementById("f_p"),qty=document.getElementById("f_q"),old=price.value;
+  price.value=qty.value;qty.value=old;updTot();
+}
 function useQuote(){readF();var q=gp(formSymbol());if(!q)return;var e=document.getElementById("f_p");if(e)e.value=q;updTot()}
 function useAllQty(){readF();var have=openQty(formSymbol());if(!(have>QE))return;var e=document.getElementById("f_q");if(e)e.value=have;updTot()}
-function feeChipsHtml(){var chips="";
+function feeChipsHtml(){var chips=F.cur==="USD"&&F.type!=="crypto"?'<button class="fchip" onclick="setStockTiered()">IBKR 按股估算</button>':"";
   for(var fpi=0;fpi<FEE_PRESETS.length;fpi++){var FP=FEE_PRESETS[fpi];
     if(F.type==="crypto"&&FP.cur)continue;
     if(FP.cur&&FP.cur!==F.cur)continue;
@@ -1643,7 +1713,7 @@ function paintCur(){var tw=F.cur==="TWD",ps=moneySign(F.cur),e;S._fCur=F.cur;S._
   e=document.getElementById("fSymL");if(e)e.textContent=tw?"股票代號":"代號";
   e=document.getElementById("f_s");if(e)e.placeholder=F.cur==="JPY"?"7203":tw?"2330":"TSLA";
   e=document.getElementById("fPL");if(e)e.textContent="每股價格 ("+ps+")";
-  e=document.getElementById("fQL");if(e)e.textContent=tw?"張數":"數量";
+  e=document.getElementById("fQL");if(e)e.textContent=tw?"張數":F.type==="crypto"?"數量":"成交股數";
   e=document.getElementById("fTip");if(e)e.style.display=tw?"":"none";
   e=document.getElementById("f_fe");if(e)e.placeholder="金額 "+ps;
   e=document.getElementById("fFeeLabel");if(e)e.textContent="整筆金額（"+F.cur+"）";
@@ -1750,8 +1820,134 @@ function searchTrades(value){
   document.getElementById("tradeResults").innerHTML=tradeResults();
 }
 function tradeFeeText(t,ps,format){
-  var fee=trFee(t),estimated=savedFeeEstimate(t);
-  return estimated||fee>0?" · "+(estimated?"預估手續費 ":"手續費 ")+H(ps+format(fee)):"";
+  var fee=trFee(t),estimated=savedFeeEstimate(t)||t.feeModel===IBKR_TIERED;
+  return estimated||fee>0||t.feeActual?" · "+(estimated?"預估手續費 ":t.feeActual?"實付手續費 ":"手續費 ")+H(ps+format(fee)):"";
+}
+var RECON_UNDO="pt_ibkr_recon_undo";
+function openRecon(){S.recon={text:"",plan:null,message:""};set({v:"recon"})}
+function reconLedger(){
+  return mergeCore({tr:S.tr},{tr:ld(TK,[]),del:ld(DK,{})}).tr;
+}
+function reconStamp(t){
+  return t?JSON.stringify(Object.keys(t).sort().map(function(k){return [k,t[k]]})):"";
+}
+function parseReconLine(line){
+  var values=line.trim().split(/[,\t]/).map(function(v){return v.trim().toUpperCase()});
+  var date=values[0],tm=values[1],symbol=values[2],side=values[3];
+  if(values.length!==7||!validTradeDay(date)||date>localDate()||!/^([01]\d|2[0-3]):[0-5]\d$/.test(tm)||
+    !/^[A-Z0-9][A-Z0-9.-]*$/.test(symbol)||!["BUY","SELL","STO","BTC","BTO","STC"].includes(side)||
+    !values.slice(4).every(function(v){return /^\d+(?:\.\d+)?$/.test(v)&&Number.isFinite(+v)}))return null;
+  var qty=+values[4],price=+values[5],fee=+values[6],opt=Object.hasOwn(optionModes,side);
+  if(!(qty>0&&price>0&&Number.isFinite(qty*price))||(opt&&!Number.isSafeInteger(qty)))return null;
+  return {date:date,tm:tm,symbol:symbol,side:side,qty:qty,price:price,fee:fee,option:opt};
+}
+function reconMatch(t,r){
+  if(t.cur!=="USD"||t.date!==r.date||!t.tm)return false;
+  if(r.option){
+    var contract=t.type==="option"&&optionContract(t.symbol);
+    if(!contract||r.symbol!==optionQuoteSymbol(contract)||r.side!==optionMode(t))return false;
+  }else if(t.type!=="stock"||t.symbol!==r.symbol||t.action.toUpperCase()!==r.side)return false;
+  function minutes(tm){return +tm.slice(0,2)*60+(+tm.slice(3,5))}
+  if(Math.abs(minutes(t.tm)-minutes(r.tm))>10)return false;
+  function sameQty(v){return Math.abs(v-r.qty)<1e-8}
+  function nearPrice(v){return Math.abs(v-r.price)<=Math.max(.005001,r.price*.001)}
+  return (sameQty(t.qty)&&nearPrice(t.price))||(!r.option&&sameQty(t.price)&&nearPrice(t.qty));
+}
+function reconPlan(text,ledger){
+  var hits=new Map();
+  var plan=text.split(/\r?\n/).filter(function(line){return line.trim()}).map(function(line,i){
+    var row=parseReconLine(line),item={line:i+1,row:row};
+    if(!row){item.note="格式有誤，請核對日期、時間與七個欄位。";return item}
+    var matches=ledger.filter(function(t){return reconMatch(t,row)});
+    if(matches.length!==1){item.note=matches.length?"符合多筆紀錄，請到交易清單逐筆編輯。":"找不到相符紀錄，請核對成交單與原交易。";return item}
+    item.before=matches[0];
+    item.stamp=reconStamp(item.before);
+    var id=item.before.id;hits.set(id,(hits.get(id)||0)+1);
+    return item;
+  });
+  plan.forEach(function(item){
+    var t=item.before,r=item.row;if(!t)return;
+    if(hits.get(t.id)>1){item.note="多行對到同一筆，請核對是否重複。";return}
+    if(t.tm===r.tm&&+t.qty===r.qty&&+t.price===r.price&&trFee(t)===r.fee&&t.feeActual&&!savedFeeEstimate(t)&&!t.feeModel){item.note="已與成交單一致。";return}
+    item.apply=true;
+  });
+  return plan;
+}
+function previewRecon(){
+  var d=S.recon;d.plan=reconPlan(d.text,reconLedger());d.message=d.plan.length?"":"請先貼上成交資料。";render();
+  if(d.plan.length){
+    var result=document.getElementById("recon_result"),scroll=result.closest(".scr");
+    scroll.scrollTop+=result.getBoundingClientRect().top-scroll.getBoundingClientRect().top-8;
+  }
+}
+function reconVersion(t,old){return Object.assign({},t,{u:Math.max(Date.now(),(+old.u||0)+1)})}
+function applyRecon(){
+  var d=S.recon,ledger=reconLedger(),fresh=reconPlan(d.text,ledger);
+  if(!d.plan||JSON.stringify(fresh)!==JSON.stringify(d.plan)){
+    d.plan=fresh;d.message="交易紀錄有變動，請重新核對下方預覽。";render();return;
+  }
+  var edits=new Map();
+  fresh.forEach(function(item){
+    if(!item.apply)return;
+    var old=item.before,r=item.row;
+    var t=reconVersion(Object.assign({},old,{tm:r.tm,price:r.price,qty:r.qty,fee:r.fee,feeActual:true}),old);
+    delete t.fr;delete t.feeEstimateRate;delete t.feeModel;
+    edits.set(old.id,{before:old,after:t});
+  });
+  if(!edits.size)return;
+  var next=ledger.map(function(t){return edits.has(t.id)?edits.get(t.id).after:t});
+  if(reconOptionConflict(ledger,next,edits)){d.message="這次更動會讓期權平倉數量超過開倉。請核對成交時間。";render();return}
+  var previous=ld(RECON_UNDO,null),backup={pairs:Array.from(edits.values())};
+  if(!sv(RECON_UNDO,backup)){d.message="裝置空間不足，無法留存原紀錄。請先匯出備份。";render();return}
+  if(!storeTrades(next)){sv(RECON_UNDO,previous);return}
+  d.text="";d.plan=null;d.message="已按成交單更新 "+edits.size+" 筆。";snapHistory();scheduleSync();render();
+}
+function reconOptionConflict(before,after,edits){
+  var oldIssues=optionBook(before,S.pr).issues;
+  for(var entry of optionBook(after,S.pr).issues){if(edits.has(entry[0])||oldIssues.get(entry[0])!==entry[1])return true}
+  return false;
+}
+function undoRecon(){
+  var backup=ld(RECON_UNDO,null);if(!backup||!Array.isArray(backup.pairs))return;
+  var ledger=reconLedger(),byId=new Map(ledger.map(function(t){return [t.id,t]})),restore=new Map();
+  for(var pair of backup.pairs){
+    if(reconStamp(byId.get(pair.after.id))!==reconStamp(pair.after)){
+      S.recon.message="對帳後已有交易被編輯或刪除，請到交易清單核對。";render();return;
+    }
+    restore.set(pair.after.id,reconVersion(pair.before,pair.after));
+  }
+  var next=ledger.map(function(t){return restore.get(t.id)||t});
+  if(reconOptionConflict(ledger,next,restore)){S.recon.message="後續期權交易會受影響，請先核對交易清單。";render();return}
+  if(!storeTrades(next))return;
+  sv(RECON_UNDO,null);S.recon.plan=null;S.recon.message="已還原 "+restore.size+" 筆原紀錄。";snapHistory();scheduleSync();render();
+}
+function reconFigures(tm,qty,price,fee,unit){
+  var amount=Number(fee).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:8});
+  return esc(tm)+" · "+H(esc(qty+" "+unit+" × US$"+price+" · 手續費 US$"+amount));
+}
+function reconPage(){
+  var d=S.recon,h='<div class="hdr"><button class="hib" aria-label="返回交易" onclick="set({v:\'trades\'})">‹</button><b>IBKR 成交對帳</b><span class="hib"></span></div>';
+  h+='<div class="scr"><div class="cnt"><div class="card"><label for="recon_text">貼上成交資料</label><p class="opt-note">每筆委託一行，依序填日期、帳本當地時間、代號、買賣方向、股數或口數、平均單價、整筆實付手續費。用逗號隔開。</p>';
+  h+='<textarea id="recon_text" class="inp" rows="4" style="resize:vertical;font-size:16px" autocapitalize="off" spellcheck="false" oninput="S.recon.text=this.value;S.recon.plan=null;S.recon.message=\'\';document.getElementById(\'recon_result\').replaceChildren()">'+esc(d.text)+'</textarea>';
+  h+='<details class="opt-note"><summary>查看填寫範例</summary>股票買入填 BUY、賣出填 SELL。期權填完整合約代號，賣出開倉 STO、買回平倉 BTC、買入開倉 BTO、賣出平倉 STC。<br>2026-01-15,21:30,DEMO,BUY,10,20,0.38</details>';
+  h+='<button class="bp" style="width:100%;margin-top:10px" onclick="previewRecon()">預覽對帳</button></div><div id="recon_result">';
+  if(d.message)h+='<p class="opt-note" role="status">'+esc(d.message)+'</p>';
+  if(d.plan&&d.plan.length)h+='<div class="section-label">對帳結果（共 '+d.plan.length+' 筆）</div>';
+  if(d.message)h+='<p role="status">'+esc(d.message)+'</p>';
+  var count=0;(d.plan||[]).forEach(function(item){
+    var r=item.row,t=item.before,unit=r&&r.option?"口":"股";
+    h+='<div class="card" style="overflow-wrap:anywhere"><b>'+(r?esc(t?symbolLabel(t.symbol):r.symbol):"第 "+item.line+" 行")+'</b>';
+    if(r)h+='<div class="opt-note">'+esc(r.date)+' · '+(r.option?esc(optionModes[r.side][2]):r.side==="BUY"?"買入":"賣出")+'</div>';
+    if(item.apply){
+      count++;
+      h+='<div class="opt-note">原紀錄　'+reconFigures(t.tm,t.qty,t.price,trFee(t),unit)+'</div><div>成交單　'+reconFigures(r.tm,r.qty,r.price,r.fee,unit)+'</div>';
+    }else h+='<p class="opt-note">'+esc(item.note)+'</p>';
+    h+='</div>';
+  });
+  if(count)h+='<button class="bp" style="width:100%" onclick="applyRecon()">套用 '+count+' 筆並備份原紀錄</button>';
+  h+='</div>';
+  if(ld(RECON_UNDO,null))h+='<button class="bs" style="width:100%;margin-top:14px" onclick="undoRecon()">復原上次對帳</button>';
+  return h+'</div></div>'+nav("trades");
 }
 function tradeResults(){
   var h="",query=(S.trF.q||"").trim().toUpperCase();
@@ -2225,6 +2421,7 @@ function render(passive){try{
     S.v="home";S.det=null;
   }
   if(S.v==="health"){fin(renderHealth());return}
+  if(S.v==="recon"&&S.recon){fin(reconPage());return}
   if(S.v==="recovery"){fin(recoveryPage());return}
 
   /* === Position detail === */
@@ -2367,14 +2564,14 @@ function render(passive){try{
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">操作</div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="tg '+(F.action==="buy"?"on":"")+'" onclick="setFAct(\'buy\')">買入</button><button class="tg '+(F.action==="sell"?"sell":"")+'" onclick="setFAct(\'sell\')">賣出</button></div>';
     h+='<div id="fSymL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"股票代號":"代號")+'</div><input class="inp" id="f_s" value="'+esc(F.symbol)+'" oninput="updTot()" placeholder="'+(F.cur==="JPY"?"7203":tw?"2330":"TSLA")+'" autocomplete="off" autocapitalize="characters" spellcheck="false" style="margin-bottom:8px">';
     h+='<div id="fChips">'+symChipsHtml()+'</div><div style="height:6px"></div>';
-    h+='<div style="display:flex;gap:10px;margin-bottom:6px"><div style="flex:1"><div id="fPL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div id="fQL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":"數量")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
+    h+='<div style="display:flex;gap:10px;margin-bottom:6px"><div style="flex:1"><div id="fPL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">每股價格 ('+ps+')</div><input class="inp" id="f_p" type="number" step="any" inputmode="decimal" value="'+F.price+'" oninput="updTot()" placeholder="0"></div><div style="flex:1"><div id="fQL" style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">'+(tw?"張數":F.type==="crypto"?"數量":"成交股數")+'</div><input class="inp" id="f_q" type="number" step="any" inputmode="decimal" value="'+F.qty+'" oninput="updTot()" placeholder="0"></div></div>';
     h+='<div id="fHint">'+fHintHtml()+'</div>';
     h+='<div id="fTip" style="font-size:11px;color:var(--amber);margin-bottom:8px'+(tw?'':';display:none')+'">💡 1張=1000股，總成本 = 股價 × 張數 × 1000</div>';
     var f0=tw?fmTW:fm,tot=(+F.price||0)*(+F.qty||0)*(tw?1000:1),fee0=fFee(),net0=(F.action==="buy")?(tot+fee0):(tot-fee0);
     /* --- 手續費 --- */
     h+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:7px;letter-spacing:0.5px">交易手續費</div>';
     h+='<div style="display:flex;gap:10px;margin-bottom:8px">';
-    h+='<label class="opt-label" style="flex:1;min-width:0">費率（%）<input class="inp" id="f_fr" type="number" min="0" step="any" inputmode="decimal" value="'+feeRateText()+'" oninput="changeFormFee(\'rate\',this.value)" placeholder="0"></label>';
+    h+='<label class="opt-label" style="flex:1;min-width:0">自訂費率（%）<input class="inp" id="f_fr" type="number" min="0" step="any" inputmode="decimal" value="'+feeRateText()+'" oninput="changeFormFee(\'rate\',this.value)" placeholder="'+(usesTieredFee()?'按股估算':'0')+'"></label>';
     h+='<label class="opt-label" style="flex:1;min-width:0"><span id="fFeeLabel">整筆金額（'+esc(F.cur)+'）</span><input class="inp" id="f_fe" type="number" min="0" step="any" inputmode="decimal" value="'+formFeeAmount()+'" oninput="changeFormFee(\'amount\',this.value)" placeholder="金額 '+ps+'"></label>';
     h+='</div>';
     /* Only show presets that apply to this market AND this action, so a 賣出-only rate
@@ -2637,7 +2834,7 @@ function render(passive){try{
     var tsymList=[];for(var tk in tsyms)tsymList.push(tk);tsymList.sort();
     h+=filterBar('trF',S.trF,tsymList,yearRanges(S.tr.map(function(x){return x.date}),S.trF.r));
     h+='<input type="search" id="tradeSearch" class="inp" style="margin-bottom:10px;font-size:16px" aria-label="搜尋交易代號" placeholder="輸入全部或部分代號" autocapitalize="characters" autocomplete="off" spellcheck="false" value="'+esc(S.trF.q||"")+'" oninput="searchTrades(this.value)">';
-    h+='<div id="tradeResults">'+tradeResults()+'</div>';
+    h+='<button class="bs" style="width:100%;margin-bottom:10px" onclick="openRecon()">IBKR 成交對帳</button><div id="tradeResults">'+tradeResults()+'</div>';
   }
   h+='</div></div>';h+=nav(S.v);
   if(S.del)h+='<div class="modal" onclick="if(event.target===this)set({del:null})"><div class="card" style="padding:22px;max-width:340px;background:var(--surface2)"><div style="font-weight:700;margin-bottom:12px;font-size:15px">刪除此交易？</div><div style="display:flex;gap:10px"><button class="bs" onclick="set({del:null})">取消</button><button class="bd" onclick="if(delTrades([S.del.id])){S.del=null;toast(\'已刪除，可至「備份與復原」補回\')}">刪除</button></div></div></div>';

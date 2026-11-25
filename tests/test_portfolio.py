@@ -96,28 +96,29 @@ class PortfolioTests(unittest.TestCase):
         self.assertNotEqual(p.evaluate("S.tr.find(t=>t.symbol==='2330').id"), old)
         expect(p.get_by_text("目前沒有可復原的刪除紀錄。")).to_be_visible()
 
-    def test_annual_fees_for_stocks_and_japan(self):
+    def test_tiered_stock_fees_and_japan_annual_fees(self):
         p = self.page
         p.evaluate("sv('pt_feed',{USD:0.0035,TWD:0})")
         p.locator(".fab").click()
         rate, fee = p.locator("#f_fr"), p.locator("#f_fe")
-        expect(rate).to_have_value("0.00496")
+        expect(rate).to_have_value("")
+        expect(rate).to_have_attribute("placeholder", "按股估算")
         p.locator("#f_s").fill("FTEST")
         p.locator("#f_p").fill("100")
         p.locator("#f_q").fill("100")
-        expect(fee).to_have_value("0.5")
-        expect(p.locator("#fnet")).to_have_text("$10,000.50")
+        expect(fee).to_have_value("0.37")
+        expect(p.locator("#fnet")).to_have_text("$10,000.37")
         p.get_by_role("button", name="賣出", exact=True).click()
-        expect(p.locator("#fnet")).to_have_text("$9,999.50")
+        expect(p.locator("#fnet")).to_have_text("$9,999.42")
         p.get_by_role("button", name="買入", exact=True).click()
         if os.getenv("SCREENSHOT_DIR"):
             out = Path(os.environ["SCREENSHOT_DIR"])
             out.mkdir(parents=True, exist_ok=True)
             p.locator("#fFeeChips").evaluate("el=>el.scrollIntoView({block:'center'})")
-            p.screenshot(path=out / f"annual-fees-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
+            p.screenshot(path=out / f"tiered-fees-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
         p.locator("#sbtn").click()
-        expect(p.locator("#tradeResults")).to_contain_text("預估手續費 $0.50")
-        self.assertEqual(p.evaluate("calc().op.find(x=>x.s==='FTEST').c"), 10000.5)
+        expect(p.locator("#tradeResults")).to_contain_text("預估手續費 $0.37")
+        self.assertEqual(p.evaluate("calc().op.find(x=>x.s==='FTEST').c"), 10000.37)
         p.locator(".fab").click()
         p.locator("#f_s").fill("7203.T")
         expect(rate).to_have_value("0.05302")
@@ -145,7 +146,7 @@ class PortfolioTests(unittest.TestCase):
         p.locator("#f_s").fill("FTEST")
         p.locator("#f_p").fill("100")
         p.locator("#f_q").fill("100")
-        p.get_by_role("button", name="IBKR 年均 0.00496%", exact=True).click()
+        p.get_by_role("button", name="IBKR 按股估算", exact=True).click()
         fee.fill("0.3725")
         p.locator("#f_q").fill("3")
         expect(fee).to_have_value("0.3725")
@@ -154,7 +155,7 @@ class PortfolioTests(unittest.TestCase):
         p.wait_for_function("!S._syT && !S.syncing && !S.pBusy")
         p.reload()
         p.locator(".fab").click()
-        expect(rate).to_have_value("0.00496")
+        expect(rate).to_have_attribute("placeholder", "按股估算")
         p.get_by_role("button", name="0%", exact=True).click()
         p.locator("#f_s").fill("FTEST")
         p.locator("#f_q").fill("1")
@@ -182,26 +183,26 @@ class PortfolioTests(unittest.TestCase):
                             ("price","2"),("date","2026-11-16")]:
             p.locator("#opt_"+name).fill(value)
         fee = p.locator("#opt_fee")
-        expect(fee).to_have_value("9.52")
-        expect(p.locator("#opt_preview")).to_have_text("淨收 US$590.48")
+        expect(fee).to_have_value("2.04")
+        expect(p.locator("#opt_preview")).to_have_text("淨收 US$597.96")
         if os.getenv("SCREENSHOT_DIR"):
             out = Path(os.environ["SCREENSHOT_DIR"])
             out.mkdir(parents=True, exist_ok=True)
             fee.evaluate("el=>el.scrollIntoView({block:'center'})")
             p.screenshot(path=out / f"option-fees-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
         p.locator("#opt_strike").fill("55")
-        expect(fee).to_have_value("9.52")
+        expect(fee).to_have_value("2.04")
         p.locator("#opt_mult").fill("10")
-        expect(fee).to_have_value("0.95")
+        expect(fee).to_have_value("2.03")
         p.locator("#opt_mult").fill("100")
         fee.fill("0")
         p.locator("#opt_qty").fill("4")
         expect(fee).to_have_value("0")
-        p.get_by_role("button", name="套用 IBKR 年均估算").click()
-        expect(fee).to_have_value("12.69")
+        p.get_by_role("button", name="套用 IBKR 按口估算").click()
+        expect(fee).to_have_value("2.72")
         p.get_by_role("button", name="儲存期權交易").click()
-        expect(p.locator("#tradeResults")).to_contain_text("預估手續費 US$12.69")
-        self.assertEqual(p.evaluate("S.tr.at(-1).feeEstimateRate"), 1.58661)
+        expect(p.locator("#tradeResults")).to_contain_text("預估手續費 US$2.72")
+        self.assertTrue(p.evaluate("S.tr.at(-1).feeModel===IBKR_TIERED"))
         p.get_by_role("button", name="編輯期權").click()
         fee.fill("1.2345")
         p.locator("#opt_price").fill("3")
@@ -213,6 +214,115 @@ class PortfolioTests(unittest.TestCase):
         p.locator("[name=mode]").select_option("XS")
         expect(fee).to_have_value("0")
         expect(p.locator("#opt_fee_note")).to_contain_text("到期歸零")
+
+    def test_tiered_boundaries_fractional_and_venue(self):
+        p = self.page
+        stock = p.evaluate("""() => {
+          const cost=(price,qty,day='2026-11-15')=>ibkrOrderFee('stock','buy',price,qty,1,day);
+          return [cost(18,2000),cost(.02,10),cost(10,.5),cost(1,.2),cost(18,2000,'2026-09-01'),
+                  cost(18,2000.2),defFee('USD','stock')===IBKR_TIERED]
+        }""")
+        self.assertEqual(stock, [7.41, 0, .05, .01, 7, 7.41, True])
+        options = p.evaluate("""() => {
+          const cost=(price,qty,venue='')=>ibkrOrderFee('option','buy',price,qty,100,'2026-11-15',venue);
+          return [cost(.049,10),cost(.05,10),cost(.099,10),cost(.10,10),cost(.01,1),
+                  cost(.06,10,'MERCURY'),cost(.06,10,'BOX')]
+        }""")
+        self.assertEqual(options, [2.75, 5.25, 5.25, 6.75, 1.03, 5.36, 5.47])
+        p.evaluate("openOptionForm(null,'BTO')")
+        p.locator("#opt_qty").fill("10")
+        p.locator("#opt_price").fill("0.06")
+        p.locator("[name=venue]").select_option("MERCURY")
+        expect(p.locator("#opt_fee")).to_have_value("5.36")
+        p.locator("#opt_fee").fill("1.88712")
+        p.locator("#opt_qty").fill("20")
+        expect(p.locator("#opt_fee")).to_have_value("1.88712")
+        p.locator("#opt_fee_reset").click()
+        expect(p.locator("#opt_fee")).to_have_value("10.73")
+
+    def test_legacy_fee_and_stock_field_swap(self):
+        p = self.page
+        p.evaluate("""const t={...findTr('lot1'),id:'legacy',date:localDate(),tm:'00:10',
+            price:800,qty:12.3,fr:0.00496,feeEstimateRate:0.00496,fee:.48};
+            storeTrades(S.tr.concat(t));S.ed={...t};S.pr.DEMO={p:12.32,at:Date.now()};
+            initF(S.ed);set({v:'form'})""")
+        expect(p.locator("#f_fe")).to_have_value("0.48")
+        expect(p.locator("#fFeeNote")).to_contain_text("平均")
+        p.get_by_role("button", name="交換單價和股數").click()
+        expect(p.locator("#f_p")).to_have_value("12.3")
+        expect(p.locator("#f_q")).to_have_value("800")
+        expect(p.get_by_role("button", name="交換單價和股數")).to_have_count(0)
+        p.get_by_role("button", name="IBKR 按股估算").click()
+        expect(p.locator("#f_fe")).to_have_value("2.96")
+        p.locator("#sbtn").click()
+        self.assertEqual(p.evaluate("[findTr('legacy').qty,findTr('legacy').fee,findTr('legacy').feeEstimateRate??null]"),
+                         [800, 2.96, None])
+
+    def test_statement_preview_apply_reload_and_undo(self):
+        p = self.page
+        p.evaluate("""const option={id:'os',type:'option',symbol:'OPT:FTEST:2026-12-18:C:24:100',
+            action:'sell',effect:'open',qty:4,price:.2,fee:1,date:'2026-11-12',tm:'22:10',cur:'USD',seq:1};
+            const close={...option,id:'oc',seq:2,action:'buy',effect:'close',qty:3,price:.074,fee:.35,
+                         feeEstimateRate:1.58661,date:'2026-11-17',tm:'22:09'};
+            const stock={...findTr('lot1'),id:'s',date:'2026-11-17',tm:'22:06',qty:6.8,price:400,
+                         fd:'margin',fee:.13,fr:.00496,feeEstimateRate:.00496};
+            storeTrades(S.tr.concat([option,close,stock]));set({v:'trades'})""")
+        p.get_by_role("button", name="IBKR 成交對帳").click()
+        lines = ("2026-11-17,22:05,DEMO,BUY,400,6.801,1.51746\n"
+                 "2026-11-17,22:04,FTEST261218C00024000,BTC,3,0.074,1.6052")
+        p.locator("#recon_text").fill(lines)
+        p.locator("#recon_text").blur()
+        p.get_by_role("button", name="預覽對帳").click()
+        expect(p.locator("#recon_result")).to_contain_text("400 股 × US$6.801")
+        self.assertEqual(p.evaluate("findTr('s').qty"), 6.8)
+        if os.getenv("SCREENSHOT_DIR"):
+            out = Path(os.environ["SCREENSHOT_DIR"])
+            out.mkdir(parents=True, exist_ok=True)
+            p.get_by_role("button", name="套用 2 筆並備份原紀錄").scroll_into_view_if_needed()
+            p.screenshot(path=out / f"fee-reconcile-{self.browser.browser_type.name}-{p.viewport_size['width']}.png")
+        self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth"), p.viewport_size["width"])
+        p.get_by_role("button", name="套用 2 筆並備份原紀錄").click()
+        expect(p.locator("#recon_result")).to_contain_text("已按成交單更新 2 筆")
+        self.assertEqual(p.evaluate("""[findTr('s').qty,findTr('s').price,trFee(findTr('s')),findTr('s').fd,
+            findTr('s').fr??null,findTr('oc').fee,findTr('oc').tm,findTr('oc').seq,
+            optionCashText('buy',.074,3,100,trFee(findTr('oc')))]"""),
+                         [400, 6.801, 1.51746, 'margin', None, 1.6052, '22:04', 2, '淨付 US$23.81'])
+        p.wait_for_function("!S._syT && !S.syncing")
+        p.reload()
+        p.locator(".nb").filter(has_text="交易").click()
+        expect(p.locator("#tradeResults")).to_contain_text("實付手續費 US$1.61")
+        p.get_by_role("button", name="IBKR 成交對帳").click()
+        p.locator("#recon_text").fill(lines)
+        p.get_by_role("button", name="預覽對帳").click()
+        expect(p.get_by_text("已與成交單一致。")).to_have_count(2)
+        p.get_by_role("button", name="復原上次對帳").click()
+        self.assertEqual(p.evaluate("[findTr('s').qty,findTr('s').price,findTr('s').feeEstimateRate,findTr('oc').fee]"),
+                         [6.8, 400, .00496, .35])
+
+    def test_recon_rejects_ambiguous_matches_and_changed_records(self):
+        p = self.page
+        p.evaluate("""storeTrades(S.tr.map(t=>({...t,tm:'12:00'})));openRecon()""")
+        line = "2026-01-01,12:00,DEMO,BUY,2,10,0"
+        for data, message in [(line + "\n" + line, "多行對到同一筆"), (line.replace("12:00", "12:15"), "找不到"),
+                              (line.replace("10,0", "10,"), "格式有誤")]:
+            p.locator("#recon_text").fill(data)
+            p.get_by_role("button", name="預覽對帳").click()
+            expect(p.locator("#recon_result")).to_contain_text(message)
+            expect(p.get_by_role("button", name="套用", exact=False)).to_have_count(0)
+        p.locator("#recon_text").fill(line)
+        p.get_by_role("button", name="預覽對帳").click()
+        p.evaluate("storeTrades(S.tr.concat({...findTr('lot1'),id:'duplicate'}))")
+        p.get_by_role("button", name="套用 1 筆並備份原紀錄").click()
+        expect(p.locator("#recon_result")).to_contain_text("符合多筆")
+        self.assertEqual(p.evaluate("trFee(findTr('lot1'))"), 2)
+        p.evaluate("storeTrades(S.tr.filter(t=>t.id!=='duplicate'))")
+        p.get_by_role("button", name="預覽對帳").click()
+        p.get_by_role("button", name="套用 1 筆並備份原紀錄").click()
+        self.assertEqual(p.evaluate("[findTr('lot1').feeActual,trFee(findTr('lot1'))]"), [True, 0])
+        p.evaluate("storeTrades(S.tr.map(t=>t.id==='lot1'?{...t,qty:5,u:t.u+1}:t))")
+        p.get_by_role("button", name="復原上次對帳").click()
+        expect(p.locator("#recon_result")).to_contain_text("已有交易被編輯")
+        self.assertEqual(p.evaluate("findTr('lot1').qty"), 5)
 
     def test_whole_position_after_sync_and_fifo(self):
         p = self.page
